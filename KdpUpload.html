@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top" />
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        margin: 16px;
+        color: #222;
+      }
+      h2 {
+        margin: 0 0 8px;
+        font-size: 16px;
+      }
+      p {
+        margin: 0 0 12px;
+        font-size: 13px;
+        line-height: 1.4;
+        color: #444;
+      }
+      .box {
+        border: 1px dashed #9aa7b5;
+        background: #f7f9fb;
+        border-radius: 8px;
+        padding: 14px;
+        text-align: center;
+      }
+      input[type="file"] {
+        width: 100%;
+        margin: 8px 0 12px;
+      }
+      button {
+        background: #1f4e78;
+        color: #fff;
+        border: 0;
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button:disabled {
+        background: #9aa7b5;
+        cursor: default;
+      }
+      #status {
+        margin-top: 12px;
+        font-size: 12px;
+        color: #333;
+        white-space: pre-wrap;
+      }
+      .err { color: #a12622; }
+      .ok { color: #0b6b3a; }
+      a { color: #1f4e78; }
+    </style>
+  </head>
+  <body>
+    <h2>Upload KDP sales report</h2>
+    <p>
+      Choose the KDP Dashboard <strong>.xlsx</strong> from your computer.
+      It will be processed in place — no extra sheets are added to your workbook.
+    </p>
+    <p>
+      Need the file?
+      <a href="https://kdp.amazon.com/en_US/reports-new" target="_blank" rel="noopener">Open KDP Reports</a>
+    </p>
+    <div class="box">
+      <input id="file" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+      <button id="go" disabled>Upload &amp; update sales</button>
+    </div>
+    <div id="status">Select your KDP Dashboard .xlsx file.</div>
+
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <script>
+      const NEEDED = [
+        'Combined Sales',
+        'Orders Processed',
+        'KENP Read',
+        'eBook Royalty',
+        'Paperback Royalty',
+        'Hardcover Royalty'
+      ];
+
+      const fileInput = document.getElementById('file');
+      const goBtn = document.getElementById('go');
+      const status = document.getElementById('status');
+
+      fileInput.addEventListener('change', function () {
+        goBtn.disabled = !(fileInput.files && fileInput.files[0]);
+        status.className = '';
+        status.textContent = fileInput.files && fileInput.files[0]
+          ? ('Ready: ' + fileInput.files[0].name)
+          : 'Select your KDP Dashboard .xlsx file.';
+      });
+
+      goBtn.addEventListener('click', async function () {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        if (typeof XLSX === 'undefined') {
+          status.className = 'err';
+          status.textContent = 'Spreadsheet parser failed to load. Close and try again.';
+          return;
+        }
+
+        goBtn.disabled = true;
+        status.className = '';
+        status.textContent = 'Reading workbook…';
+
+        try {
+          const buffer = await file.arrayBuffer();
+          const wb = XLSX.read(buffer, { type: 'array' });
+          const payload = { fileName: file.name, sheets: {} };
+          let found = 0;
+
+          NEEDED.forEach(function (name) {
+            if (!wb.Sheets[name]) return;
+            payload.sheets[name] = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' });
+            found++;
+          });
+
+          if (!found) {
+            throw new Error(
+              'No recognized KDP sheets found. Expected names like Combined Sales, Orders Processed, KENP Read.'
+            );
+          }
+
+          status.textContent = 'Updating Manual Entry, Sales History, Catalog, and Dashboard…';
+          google.script.run
+            .withSuccessHandler(function (msg) {
+              status.className = 'ok';
+              status.textContent = msg || 'Import complete.';
+              setTimeout(function () { google.script.host.close(); }, 1600);
+            })
+            .withFailureHandler(function (err) {
+              goBtn.disabled = false;
+              status.className = 'err';
+              status.textContent = (err && err.message) ? err.message : String(err);
+            })
+            .processKdpSalesUpload(payload);
+        } catch (err) {
+          goBtn.disabled = false;
+          status.className = 'err';
+          status.textContent = (err && err.message) ? err.message : String(err);
+        }
+      });
+    </script>
+  </body>
+</html>

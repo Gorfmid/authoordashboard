@@ -1,0 +1,6 @@
+node_modules/
+package-lock.json
+.clasp.json
+.clasprc.json
+*.xlsx
+.DS_Store
