@@ -1,8 +1,10 @@
 const AD = {
-  VERSION: '1.2.0',
+  VERSION: '1.3.0',
   TZ: 'America/Boise',
   AMAZON_FETCH_DELAY_MS: 2000,
   AMAZON_USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  // Used only when Amazon blocks UrlFetchApp (robot check / empty rank HTML).
+  AMAZON_READER_FALLBACK_PREFIX: 'https://r.jina.ai/https://www.amazon.com/dp/',
   ACTIVE_LISTING_STATUSES: ['live', 'in review'],
   KDP_REPORTS_URL: 'https://kdp.amazon.com/en_US/reports-new',
   // Saturday night close = Sunday 00:00 Mountain (America/Boise).
@@ -25,7 +27,27 @@ const AD = {
     CATALOG: 'Catalog Summary',
     SALES: 'Sales History',
     RANKS: 'Rank History',
-    MARKETING: 'Marketing History'
+    MARKETING: 'Marketing History',
+    YOY: 'Year over Year'
+  },
+  // Light fills for Sales History rows (rotate; adjacent books never share a color).
+  BOOK_SHADES: [
+    '#E8F1F8',
+    '#EAF6EE',
+    '#F8F0E6',
+    '#F3EAF8',
+    '#E8F6F6',
+    '#F8ECEC',
+    '#EEF0F8',
+    '#F4F6E8',
+    '#F8F3EA',
+    '#EAF2F8'
+  ],
+  salesYearSheetName: function(year){ return 'Sales ' + year; },
+  isSalesYearSheetName: function(name){ return /^Sales\s+\d{4}$/.test(String(name || '')); },
+  salesYearFromSheetName: function(name){
+    const m = String(name || '').match(/^Sales\s+(\d{4})$/);
+    return m ? Number(m[1]) : null;
   },
   COL: {
     BOOK_ID: 0,

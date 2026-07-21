@@ -25,3 +25,23 @@ function getMostRecentWeekEndingSaturday_(d){
 }
 function dateKey_(d){let tz=AD.TZ;try{tz=SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone()||AD.TZ;}catch(e){}return Utilities.formatDate(d,tz,'yyyy-MM-dd');}
 function getExistingSnapshotKeys_(sh,dateCol,listingCol,typeCol){const set=new Set();if(sh.getLastRow()<2)return set;sh.getRange(2,1,sh.getLastRow()-1,sh.getLastColumn()).getValues().forEach(r=>{if(!isValidDate_(r[dateCol-1])||!clean_(r[listingCol-1]))return;const p=[dateKey_(new Date(r[dateCol-1])),clean_(r[listingCol-1])];if(typeCol)p.push(clean_(r[typeCol-1]));set.add(p.join('|'));});return set;}
+/** Unmerge any merged ranges that overlap a block, then clear contents. Avoids merge/clear errors. */
+function clearBlockUnmerged_(sheet,startRow,startCol,numRows,numCols){
+  const endRow=startRow+numRows-1,endCol=startCol+numCols-1;
+  try{
+    const merges=sheet.getRange(1,1,Math.max(sheet.getMaxRows(),endRow),Math.max(sheet.getMaxColumns(),endCol)).getMergedRanges();
+    merges.forEach(m=>{
+      const r1=m.getRow(),c1=m.getColumn(),r2=r1+m.getNumRows()-1,c2=c1+m.getNumColumns()-1;
+      if(r1<=endRow&&r2>=startRow&&c1<=endCol&&c2>=startCol){try{m.breakApart();}catch(e){}}
+    });
+  }catch(e){}
+  sheet.getRange(startRow,startCol,numRows,numCols).clearContent().clearFormat();
+}
+function mergeRowSafe_(sheet,row,startCol,numCols){
+  const range=sheet.getRange(row,startCol,1,numCols);
+  try{
+    const merges=range.getMergedRanges();
+    merges.forEach(m=>{try{m.breakApart();}catch(e){}});
+  }catch(e){}
+  return range.merge();
+}

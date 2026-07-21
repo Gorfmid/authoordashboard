@@ -7,6 +7,7 @@ function recordCurrentSnapshot() {
   const week = getWeekEndingDate_(today);
   recordRankSnapshot_(rows, today, week);
   recordSalesSnapshot_(rows, today, week);
+  refreshSalesReports_();
   rebuildCatalogSummary_();
   refreshDashboard_();
   lockAutomaticSheets();
@@ -82,6 +83,7 @@ function recordSalesSnapshot_(rows, date, week) {
   sh.getRange('A:B').setNumberFormat('m/d/yyyy');
   sh.getRange('I:L').setNumberFormat('#,##0');
   sh.getRange('M:N').setNumberFormat('$#,##0.00');
+  formatSalesHistoryShading_();
 }
 
 function processMarketingEntries() { processMarketingEntries_(true); }

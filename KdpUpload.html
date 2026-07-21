@@ -43,14 +43,55 @@
         cursor: default;
       }
       #status {
-        margin-top: 12px;
+        margin-top: 10px;
         font-size: 12px;
         color: #333;
         white-space: pre-wrap;
+        min-height: 36px;
       }
       .err { color: #a12622; }
       .ok { color: #0b6b3a; }
       a { color: #1f4e78; }
+      #progressWrap {
+        display: none;
+        margin-top: 14px;
+        text-align: left;
+      }
+      #progressWrap.visible { display: block; }
+      #progressLabel {
+        font-size: 12px;
+        color: #333;
+        margin-bottom: 6px;
+      }
+      #progressTrack {
+        width: 100%;
+        height: 12px;
+        background: #e3e8ee;
+        border-radius: 999px;
+        overflow: hidden;
+        position: relative;
+      }
+      #progressBar {
+        height: 100%;
+        width: 0%;
+        background: #1f4e78;
+        border-radius: 999px;
+        transition: width 0.25s ease;
+      }
+      #progressBar.indeterminate {
+        width: 40%;
+        transition: none;
+        animation: slide 1.1s ease-in-out infinite;
+      }
+      @keyframes slide {
+        0% { transform: translateX(-120%); }
+        100% { transform: translateX(280%); }
+      }
+      #progressPct {
+        margin-top: 4px;
+        font-size: 11px;
+        color: #666;
+      }
     </style>
   </head>
   <body>
@@ -67,6 +108,13 @@
       <input id="file" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
       <button id="go" disabled>Upload &amp; update sales</button>
     </div>
+
+    <div id="progressWrap">
+      <div id="progressLabel">Working…</div>
+      <div id="progressTrack"><div id="progressBar"></div></div>
+      <div id="progressPct">0%</div>
+    </div>
+
     <div id="status">Select your KDP Dashboard .xlsx file.</div>
 
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
@@ -80,11 +128,66 @@
         'Hardcover Royalty'
       ];
 
+      const WAIT_MESSAGES = [
+        'Updating Manual Entry…',
+        'Matching ASINs and aggregating sales…',
+        'Writing Sales History snapshot…',
+        'Refreshing Catalog Summary…',
+        'Refreshing Dashboard…',
+        'Still working — large reports can take a minute…'
+      ];
+
       const fileInput = document.getElementById('file');
       const goBtn = document.getElementById('go');
       const status = document.getElementById('status');
+      const progressWrap = document.getElementById('progressWrap');
+      const progressBar = document.getElementById('progressBar');
+      const progressLabel = document.getElementById('progressLabel');
+      const progressPct = document.getElementById('progressPct');
+
+      let waitTimer = null;
+      let waitIdx = 0;
+
+      function showProgress() {
+        progressWrap.classList.add('visible');
+      }
+
+      function setProgress(pct, label, indeterminate) {
+        showProgress();
+        progressLabel.textContent = label || 'Working…';
+        if (indeterminate) {
+          progressBar.classList.add('indeterminate');
+          progressBar.style.width = '40%';
+          progressPct.textContent = 'Working…';
+        } else {
+          progressBar.classList.remove('indeterminate');
+          const n = Math.max(0, Math.min(100, Math.round(pct)));
+          progressBar.style.width = n + '%';
+          progressPct.textContent = n + '%';
+        }
+      }
+
+      function stopWaitMessages() {
+        if (waitTimer) {
+          clearInterval(waitTimer);
+          waitTimer = null;
+        }
+      }
+
+      function startWaitMessages() {
+        stopWaitMessages();
+        waitIdx = 0;
+        progressLabel.textContent = WAIT_MESSAGES[0];
+        waitTimer = setInterval(function () {
+          waitIdx = Math.min(waitIdx + 1, WAIT_MESSAGES.length - 1);
+          progressLabel.textContent = WAIT_MESSAGES[waitIdx];
+          status.textContent = WAIT_MESSAGES[waitIdx];
+        }, 4000);
+      }
 
       fileInput.addEventListener('change', function () {
+        stopWaitMessages();
+        progressWrap.classList.remove('visible');
         goBtn.disabled = !(fileInput.files && fileInput.files[0]);
         status.className = '';
         status.textContent = fileInput.files && fileInput.files[0]
@@ -102,19 +205,25 @@
         }
 
         goBtn.disabled = true;
+        fileInput.disabled = true;
         status.className = '';
+        setProgress(8, 'Reading workbook…', false);
         status.textContent = 'Reading workbook…';
 
         try {
           const buffer = await file.arrayBuffer();
+          setProgress(30, 'Parsing KDP sheets…', false);
+          status.textContent = 'Parsing KDP sheets…';
+
           const wb = XLSX.read(buffer, { type: 'array' });
           const payload = { fileName: file.name, sheets: {} };
           let found = 0;
 
-          NEEDED.forEach(function (name) {
+          NEEDED.forEach(function (name, idx) {
             if (!wb.Sheets[name]) return;
             payload.sheets[name] = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' });
             found++;
+            setProgress(30 + Math.round(((idx + 1) / NEEDED.length) * 25), 'Parsed: ' + name, false);
           });
 
           if (!found) {
@@ -123,21 +232,33 @@
             );
           }
 
-          status.textContent = 'Updating Manual Entry, Sales History, Catalog, and Dashboard…';
+          setProgress(60, 'Sending to Google Sheet…', true);
+          status.textContent = 'Updating Manual Entry, Sales History, Catalog, and Dashboard…\nThis can take a bit — not frozen.';
+          startWaitMessages();
+
           google.script.run
             .withSuccessHandler(function (msg) {
+              stopWaitMessages();
+              setProgress(100, 'Import complete', false);
               status.className = 'ok';
               status.textContent = msg || 'Import complete.';
-              setTimeout(function () { google.script.host.close(); }, 1600);
+              setTimeout(function () { google.script.host.close(); }, 1800);
             })
             .withFailureHandler(function (err) {
+              stopWaitMessages();
+              progressBar.classList.remove('indeterminate');
+              setProgress(100, 'Import failed', false);
               goBtn.disabled = false;
+              fileInput.disabled = false;
               status.className = 'err';
               status.textContent = (err && err.message) ? err.message : String(err);
             })
             .processKdpSalesUpload(payload);
         } catch (err) {
+          stopWaitMessages();
+          progressBar.classList.remove('indeterminate');
           goBtn.disabled = false;
+          fileInput.disabled = false;
           status.className = 'err';
           status.textContent = (err && err.message) ? err.message : String(err);
         }

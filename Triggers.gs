@@ -23,6 +23,7 @@ function scheduledWeeklyUpdate() {
   createStoreUrls_();
   recordCurrentSnapshotSilent_();
   processMarketingEntries_(false);
+  refreshSalesReports_();
   rebuildCatalogSummary_();
   refreshDashboard_();
   lockAutomaticSheets();

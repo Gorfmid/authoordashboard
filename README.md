@@ -117,6 +117,14 @@ That single action:
 
 Ranks are not changed. Use **Open KDP Reports Page** anytime for the download site + QR code.
 
+## Sales History shading and yearly reports
+
+- **Sales History** rows are lightly color-shaded by Book ID (adjacent books never share a color).
+- Auto-built year sheets named **Sales 2026**, **Sales 2027**, … contain a weekly units pivot (one column per book) and a stacked bar chart.
+- **Year over Year** summarizes units and royalties by book for each year found in Sales History.
+
+These sheets regenerate on **Refresh Everything**, sales snapshots, KDP upload, and the weekly sales trigger.
+
 ## Weekly sales snapshots
 
 Update lifetime totals in Manual Entry (manually or via KDP import), then choose:

@@ -25,6 +25,7 @@ function refreshDashboard_() {
     }
   });
 
+  const seriesByFormat = getOverallRankSeriesByFormat_();
   const series = getOverallRankSeries_();
   let trend = '';
   if (series.length >= 2) {
@@ -57,7 +58,9 @@ function refreshDashboard_() {
   ];
 
   dash.getRange(4, 2, metrics.length, 1).setValues(metrics.map(x => [x]));
-  dash.getRange('D5:H1000').clearContent();
+
+  // Catalog Performance block (D4 header, data from D5). Clear a tall range so growth doesn't leave stale rows.
+  clearBlockUnmerged_(dash, 5, 4, 200, 5);
   const perf = rows.map(r => [r[1], r[4], r[12], r[14], r[11]]).sort((a, b) => number_(b[3]) - number_(a[3]));
   if (perf.length) dash.getRange(5, 4, perf.length, 5).setValues(perf);
 
@@ -71,7 +74,18 @@ function refreshDashboard_() {
   dash.getRange('G5:G').setNumberFormat('$#,##0.00');
   dash.getRange('H5:H').setNumberFormat('#,##0');
 
-  refreshRankTrendChart_(dash, series);
+  // Layout:
+  //  A-B metrics | D-H portfolio | J+ chart (right side)
+  //  Category ranks start BELOW whichever of metrics/portfolio ends lower.
+  const metricsEndRow = 3 + metrics.length; // labels begin at row 4
+  const catalogEndRow = perf.length ? (4 + perf.length) : 4;
+  const categoryStartRow = Math.max(metricsEndRow, catalogEndRow) + 2;
+
+  // Wipe prior category blocks (old fixed start at row 22 and any later dynamic starts).
+  clearBlockUnmerged_(dash, 20, 1, 250, 6);
+
+  refreshCategoryRankTable_(dash, categoryStartRow);
+  refreshRankTrendChart_(dash, seriesByFormat);
 }
 
 function ensureDashboardLayout_(sheet) {
@@ -103,39 +117,124 @@ function ensureDashboardLayout_(sheet) {
       .setFontSize(22).setFontWeight('bold').setHorizontalAlignment('center')
       .setBackground('#1f4e78').setFontColor('#ffffff');
   }
+  // Leave room on the right for the chart.
+  [225, 160, 30, 270, 120, 100, 110, 110].forEach((w, i) => {
+    if (sheet.getColumnWidth(i + 1) < w) sheet.setColumnWidth(i + 1, w);
+  });
 }
 
-function refreshRankTrendChart_(dash, series) {
-  const startRow = 3;
-  const startCol = 10; // column J
-  dash.getRange(startRow, startCol, 200, 2).clearContent();
-  dash.getRange(startRow, startCol, 1, 2).setValues([['Snapshot Date', 'Best Overall Rank (lower is better)']]);
+function refreshCategoryRankTable_(dash, startRow) {
+  const row0 = startRow || 22;
+  const cols = 4;
 
-  if (series && series.length) {
-    const values = series.map(p => [p.date, p.rank]);
-    dash.getRange(startRow + 1, startCol, values.length, 2).setValues(values);
-    dash.getRange(startRow + 1, startCol, values.length, 1).setNumberFormat('m/d/yyyy');
-    dash.getRange(startRow + 1, startCol + 1, values.length, 1).setNumberFormat('#,##0');
+  const byFormat = getCategoryRankSummaryByFormat_();
+  const sections = [
+    { title: 'eBook Category Ranks (lower number = better)', rows: byFormat.ebook },
+    { title: 'Paperback Category Ranks (lower number = better)', rows: byFormat.paperback },
+    { title: 'Hardcover Category Ranks (lower number = better)', rows: byFormat.hardcover }
+  ];
+
+  let row = row0;
+  let wroteAny = false;
+
+  sections.forEach(section => {
+    mergeRowSafe_(dash, row, 1, cols)
+      .setValue(section.title)
+      .setFontWeight('bold')
+      .setHorizontalAlignment('center')
+      .setBackground('#1f4e78')
+      .setFontColor('#ffffff');
+    row++;
+
+    dash.getRange(row, 1, 1, cols).setValues([[
+      'Category',
+      'Best Rank Ever',
+      'Current Best Rank',
+      'Last Seen'
+    ]]);
+    styleHeader_(dash.getRange(row, 1, 1, cols));
+    row++;
+
+    if (!section.rows.length) {
+      dash.getRange(row, 1).setValue('No category ranks yet for this format.');
+      row += 2;
+      return;
+    }
+
+    wroteAny = true;
+    const values = section.rows.map(r => [
+      r.category,
+      r.bestEver,
+      r.currentBest,
+      r.lastSeen
+    ]);
+    dash.getRange(row, 1, values.length, cols).setValues(values);
+    dash.getRange(row, 2, values.length, 2).setNumberFormat('#,##0');
+    dash.getRange(row, 4, values.length, 1).setNumberFormat('m/d/yyyy');
+    row += values.length + 1;
+  });
+
+  if (!wroteAny) {
+    dash.getRange(row0 + 2, 1).setValue('No category ranks yet. Run Update Amazon Rankings Now.');
   }
+
+  [280, 120, 130, 110].forEach((w, i) => dash.setColumnWidth(i + 1, Math.max(dash.getColumnWidth(i + 1) || 0, w)));
+}
+
+function refreshRankTrendChart_(dash, seriesByFormat) {
+  // Chart floats on the right (column J). Source data lives farther right so it doesn't clutter the view.
+  const chartAnchorRow = 3;
+  const chartAnchorCol = 10; // J
+  const dataStartRow = 3;
+  const dataStartCol = 20; // column T — chart source data
+  const data = seriesByFormat || { dates: [], series: { ebook: [], paperback: [], hardcover: [] } };
+
+  clearBlockUnmerged_(dash, dataStartRow, dataStartCol, 200, 4);
+  dash.getRange(dataStartRow, dataStartCol, 1, 4).setValues([[
+    'Snapshot Date',
+    'eBook Overall',
+    'Paperback Overall',
+    'Hardcover Overall'
+  ]]);
+
+  if (data.dates && data.dates.length) {
+    const values = data.dates.map((d, i) => [
+      d,
+      data.series.ebook[i],
+      data.series.paperback[i],
+      data.series.hardcover[i]
+    ]);
+    dash.getRange(dataStartRow + 1, dataStartCol, values.length, 4).setValues(values);
+    dash.getRange(dataStartRow + 1, dataStartCol, values.length, 1).setNumberFormat('m/d/yyyy');
+    dash.getRange(dataStartRow + 1, dataStartCol + 1, values.length, 3).setNumberFormat('#,##0');
+  }
+
+  // Hide chart source columns so the sheet stays clean.
+  try { dash.hideColumns(dataStartCol, 4); } catch (e) {}
 
   dash.getCharts().forEach(c => {
     try {
       const title = String((c.getOptions() && c.getOptions().get('title')) || '');
-      if (/rank/i.test(title)) dash.removeChart(c);
+      if (/rank/i.test(title) || /overall/i.test(title)) dash.removeChart(c);
     } catch (e) {}
   });
 
-  if (!series || series.length < 2) return;
+  if (!data.dates || data.dates.length < 2) return;
 
-  const dataRange = dash.getRange(startRow, startCol, series.length + 1, 2);
+  const dataRange = dash.getRange(dataStartRow, dataStartCol, data.dates.length + 1, 4);
   const chart = dash.newChart()
     .asLineChart()
     .addRange(dataRange)
-    .setTitle('Best Overall Amazon Rank Over Time (lower is better)')
+    .setTitle('Overall Amazon Rank Over Time by Format (lower is better)')
     .setXAxisTitle('Snapshot Date')
-    .setYAxisTitle('Best Overall Rank')
+    .setYAxisTitle('Overall Rank')
     .setNumHeaders(1)
-    .setPosition(20, 1, 0, 0)
+    .setLegendPosition(Charts.Position.BOTTOM)
+    .setOption('curveType', 'function')
+    .setOption('pointSize', 5)
+    .setOption('width', 720)
+    .setOption('height', 360)
+    .setPosition(chartAnchorRow, chartAnchorCol, 0, 0)
     .build();
   dash.insertChart(chart);
 }

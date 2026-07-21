@@ -24,12 +24,14 @@ function applyManualEntryColumnVisibility_(sheet) {
     sh.getRange(a1).setBackground('#eeeeee').setFontColor('#666666');
   });
 
+  // Keep Process Status visible so fetch results are obvious.
+  try { sh.showColumns(30, 1); } catch (e) {}
+
   // 1-based column index, count
   const hideGroups = [
     [1, 2],  // Book ID, Listing ID
     [15, 2], // Listing Release Date, Store URL
-    [20, 4], // Current Overall Rank, Rating, Reviews, Last Data Date
-    [30, 1]  // Process Status
+    [20, 4]  // Current Overall Rank, Rating, Reviews, Last Data Date (see Rank History / Catalog)
   ];
   hideGroups.forEach(pair => {
     try { sh.hideColumns(pair[0], pair[1]); } catch (e) {}
@@ -104,4 +106,5 @@ function orderSheets_() {
   [AD.SHEETS.INPUT,AD.SHEETS.DASHBOARD,AD.SHEETS.CATALOG,AD.SHEETS.SALES,AD.SHEETS.RANKS,AD.SHEETS.MARKETING].forEach((name,i)=>{
     const sh=ss.getSheetByName(name); if(sh){ss.setActiveSheet(sh);ss.moveActiveSheet(i+1);}
   });
+  orderReportSheets_();
 }

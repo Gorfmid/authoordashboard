@@ -58,8 +58,10 @@ function initializeDashboard() {
   buildHistorySheet_(sales, AD.SALES_HEADERS);
   buildHistorySheet_(ranks, AD.RANK_HEADERS);
   buildHistorySheet_(marketing, AD.MARKETING_HEADERS);
+  ensureYearOverYearSheet_();
   seedFirstBook_(temp);
   orderSheets_();
+  orderReportSheets_();
   refreshEverything();
   lockAutomaticSheets();
   ss.setActiveSheet(temp);
@@ -73,9 +75,11 @@ function refreshEverything() {
   applyManualEntryColumnVisibility_();
   ensureRankHistorySchema_();
   ensureCatalogSchema_();
+  refreshSalesReports_();
   rebuildCatalogSummary_();
   refreshDashboard_();
   processMarketingEntries_(false);
+  orderReportSheets_();
   lockAutomaticSheets();
 }
 

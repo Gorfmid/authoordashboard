@@ -22,8 +22,8 @@ function openKdpReportsPage() {
 
 function uploadKdpSalesReport() {
   const html = HtmlService.createHtmlOutputFromFile('KdpUpload')
-    .setWidth(460)
-    .setHeight(420);
+    .setWidth(480)
+    .setHeight(520);
   SpreadsheetApp.getUi().showModalDialog(html, 'Upload Amazon / KDP sales data');
 }
 
@@ -61,6 +61,7 @@ function processKdpSalesUpload(payload) {
     const today = getSpreadsheetToday_();
     const week = getWeekEndingDate_(today);
     recordSalesSnapshot_(rows, today, week);
+    refreshSalesReports_();
     rebuildCatalogSummary_();
     refreshDashboard_();
     lockAutomaticSheets();

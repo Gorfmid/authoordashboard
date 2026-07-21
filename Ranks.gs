@@ -28,7 +28,8 @@ function updateAmazonRanks_(showUi, asOfDate) {
     missingRanks: 0,
     httpFailures: 0,
     otherFailures: 0,
-    historyRowsAdded: 0
+    historyRowsAdded: 0,
+    details: []
   };
 
   try {
@@ -62,13 +63,15 @@ function updateAmazonRanks_(showUi, asOfDate) {
       if (!asin) {
         summary.otherFailures++;
         sh.getRange(rowNum, AD.COL.PROCESS_STATUS + 1).setValue(AD.STATUS.MISSING_ASIN);
+        summary.details.push(clean_(r[AD.COL.FORMAT]) + ': ASIN missing');
         return;
       }
 
       if (summary.listingsChecked > 1) Utilities.sleep(AD.AMAZON_FETCH_DELAY_MS);
 
-      const result = fetchAmazonListingData_(asin);
-      console.log('Amazon fetch ' + asin + ': ' + JSON.stringify({
+      const format = clean_(r[AD.COL.FORMAT]);
+      const result = fetchAmazonListingData_(asin, format);
+      console.log('Amazon fetch ' + asin + ' (' + format + '): ' + JSON.stringify({
         success: result.success,
         status: result.status,
         overallRank: result.overallRank,
@@ -78,22 +81,29 @@ function updateAmazonRanks_(showUi, asOfDate) {
       if (!result.success) {
         tallyAmazonFailure_(summary, result.status);
         sh.getRange(rowNum, AD.COL.PROCESS_STATUS + 1).setValue(statusMessageForAmazon_(result));
+        summary.details.push(format + ' (' + asin + '): ' + (result.status || 'FAILED'));
         return;
       }
 
       if (result.overallRank && result.overallRank > 0) {
         sh.getRange(rowNum, AD.COL.RANK + 1).setValue(result.overallRank);
       }
-      if (result.rating != null && number_(result.rating) > 0) {
+      if (result.reviewsConfirmedZero) {
+        sh.getRange(rowNum, AD.COL.RATING + 1).clearContent();
+        sh.getRange(rowNum, AD.COL.REVIEWS + 1).clearContent();
+      } else if (result.reviewCount != null && number_(result.reviewCount) > 0 && result.rating != null && number_(result.rating) > 0) {
         sh.getRange(rowNum, AD.COL.RATING + 1).setValue(number_(result.rating));
-      }
-      if (result.reviewCount != null && number_(result.reviewCount) > 0) {
         sh.getRange(rowNum, AD.COL.REVIEWS + 1).setValue(Math.round(number_(result.reviewCount)));
       }
       applyReleaseDatesFromAmazon_(sh, rowNum, r, result.publicationDate);
       sh.getRange(rowNum, AD.COL.LAST_DATA_DATE + 1).setValue(today);
       sh.getRange(rowNum, AD.COL.PROCESS_STATUS + 1).setValue(AD.STATUS.UPDATED);
       summary.successfulUpdates++;
+      summary.details.push(
+        format + ' (' + asin + '): #' +
+        (result.overallRank || '?') + ' in ' + (result.overallCategory || 'Overall') +
+        ', ' + ((result.categoryRanks || []).length) + ' category ranks'
+      );
 
       const base = [
         today,
@@ -102,7 +112,7 @@ function updateAmazonRanks_(showUi, asOfDate) {
         listingId,
         clean_(r[AD.COL.TITLE]),
         clean_(r[AD.COL.STORE]) || 'Amazon',
-        clean_(r[AD.COL.FORMAT]),
+        format,
         asin
       ];
 
@@ -184,7 +194,7 @@ function statusMessageForAmazon_(result) {
 }
 
 function formatRankUpdateSummary_(summary) {
-  return [
+  const lines = [
     'Amazon rank update complete.',
     '',
     'Listings checked: ' + summary.listingsChecked,
@@ -194,8 +204,19 @@ function formatRankUpdateSummary_(summary) {
     'HTTP failures: ' + summary.httpFailures,
     'Other failures: ' + summary.otherFailures,
     'History rows added: ' + summary.historyRowsAdded,
-    summary.message ? ('\n' + summary.message) : ''
-  ].join('\n');
+    '',
+    'Per listing:',
+    ...(summary.details && summary.details.length ? summary.details : ['(none)']),
+    '',
+    'Look at the Rank History sheet for Overall + Category rows by format.',
+    'Current ranks are also rolled into Catalog Summary / Dashboard.',
+    'If Robot checks > 0, Amazon blocked the script — wait a bit and retry.'
+  ];
+  if (summary.message) lines.push('', summary.message);
+  if (summary.successfulUpdates > 0 && summary.historyRowsAdded === 0) {
+    lines.push('', 'Note: no new history rows — duplicates for today were skipped.');
+  }
+  return lines.join('\n');
 }
 
 function ensureRankHistorySchema_() {
@@ -333,20 +354,147 @@ function getLastRankUpdateByBook_() {
   return map;
 }
 
-function getOverallRankSeries_() {
+/**
+ * Overall rank time series by format for the Dashboard chart.
+ * Returns { dates: Date[], series: { ebook: (number|''), paperback, hardcover }[] aligned to dates }
+ * Skips Manual Snapshot rows when an Amazon Overall row exists for the same date/format.
+ */
+function getOverallRankSeriesByFormat_() {
   const sh = getRequiredSheet_(AD.SHEETS.RANKS);
-  if (sh.getLastRow() < 2) return [];
-  const byDate = new Map();
+  const empty = { dates: [], series: { ebook: [], paperback: [], hardcover: [] } };
+  if (sh.getLastRow() < 2) return empty;
+
+  const bucket = format => {
+    const n = normalizeKey_(format);
+    if (/kindle|ebook|e-book/.test(n)) return 'ebook';
+    if (/paper/.test(n)) return 'paperback';
+    if (/hard/.test(n)) return 'hardcover';
+    return '';
+  };
+
+  // key: date|bucket -> { date, rank, manual }
+  const map = new Map();
   sh.getRange(2, 1, sh.getLastRow() - 1, AD.RANK_HEADERS.length).getValues().forEach(r => {
     if (!isValidDate_(r[0])) return;
     const rankType = clean_(r[8]);
+    if (!/^overall$/i.test(rankType) && !/^overall\s*rank$/i.test(rankType)) return;
     const rank = number_(r[10]);
     if (rank <= 0) return;
-    if (!/^overall$/i.test(rankType) && !/^overall\s*rank$/i.test(rankType)) return;
-    const key = dateKey_(new Date(r[0]));
-    if (!byDate.has(key) || rank < byDate.get(key).rank) {
-      byDate.set(key, { date: startOfDay_(new Date(r[0])), rank: rank, title: clean_(r[4]) });
+    const formatKey = bucket(r[6]);
+    if (!formatKey) return;
+    const d = startOfDay_(new Date(r[0]));
+    const key = dateKey_(d) + '|' + formatKey;
+    const isManual = /^manual\s*snapshot$/i.test(clean_(r[9]));
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, { date: d, rank: rank, manual: isManual });
+      return;
+    }
+    // Prefer Amazon Overall over Manual Snapshot for the same day/format.
+    if (prev.manual && !isManual) {
+      map.set(key, { date: d, rank: rank, manual: false });
+    } else if (prev.manual === isManual && rank < prev.rank) {
+      prev.rank = rank;
     }
   });
-  return [...byDate.values()].sort((a, b) => a.date - b.date);
+
+  const dateSet = new Map();
+  map.forEach(v => dateSet.set(dateKey_(v.date), v.date));
+  const dates = [...dateSet.values()].sort((a, b) => a - b);
+
+  const series = { ebook: [], paperback: [], hardcover: [] };
+  dates.forEach(d => {
+    const dk = dateKey_(d);
+    ['ebook', 'paperback', 'hardcover'].forEach(fmt => {
+      const hit = map.get(dk + '|' + fmt);
+      series[fmt].push(hit ? hit.rank : '');
+    });
+  });
+
+  return { dates: dates, series: series };
+}
+
+/** Legacy single-series helper (best overall across formats). */
+function getOverallRankSeries_() {
+  const by = getOverallRankSeriesByFormat_();
+  return by.dates.map((d, i) => {
+    const ranks = [by.series.ebook[i], by.series.paperback[i], by.series.hardcover[i]]
+      .map(number_)
+      .filter(x => x > 0);
+    return { date: d, rank: ranks.length ? Math.min(...ranks) : '', title: '' };
+  }).filter(p => p.rank);
+}
+
+/**
+ * Category tracker for Dashboard, grouped by format.
+ * Best Rank Ever = lowest historical Category rank for that format+category.
+ * Current Best = lowest Category rank from the latest snapshot date for that format+category.
+ */
+function getCategoryRankSummaryByFormat_() {
+  const sh = getRequiredSheet_(AD.SHEETS.RANKS);
+  const empty = { ebook: [], paperback: [], hardcover: [], other: [] };
+  if (sh.getLastRow() < 2) return empty;
+
+  const byKey = new Map();
+  sh.getRange(2, 1, sh.getLastRow() - 1, AD.RANK_HEADERS.length).getValues().forEach(r => {
+    if (!isValidDate_(r[0])) return;
+    const rankType = clean_(r[8]);
+    if (!/^category$/i.test(rankType)) return;
+    const category = clean_(r[9]);
+    const rank = number_(r[10]);
+    const format = clean_(r[6]);
+    if (!category || rank <= 0 || !format) return;
+
+    const d = startOfDay_(new Date(r[0]));
+    const key = normalizeKey_(format) + '|' + normalizeKey_(category);
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        format: format,
+        category: category,
+        bestEver: rank,
+        latestDate: d,
+        currentBest: rank
+      });
+      return;
+    }
+
+    const cur = byKey.get(key);
+    if (rank < cur.bestEver) cur.bestEver = rank;
+    if (d > cur.latestDate) {
+      cur.latestDate = d;
+      cur.currentBest = rank;
+    } else if (dateKey_(d) === dateKey_(cur.latestDate) && rank < cur.currentBest) {
+      cur.currentBest = rank;
+    }
+  });
+
+  const bucket = name => {
+    const n = normalizeKey_(name);
+    if (/kindle|ebook|e-book/.test(n)) return 'ebook';
+    if (/paper/.test(n)) return 'paperback';
+    if (/hard/.test(n)) return 'hardcover';
+    return 'other';
+  };
+
+  const out = { ebook: [], paperback: [], hardcover: [], other: [] };
+  [...byKey.values()].forEach(c => {
+    out[bucket(c.format)].push({
+      format: c.format,
+      category: c.category,
+      bestEver: c.bestEver,
+      currentBest: c.currentBest,
+      lastSeen: c.latestDate
+    });
+  });
+
+  Object.keys(out).forEach(k => {
+    out[k].sort((a, b) => a.currentBest - b.currentBest || a.category.localeCompare(b.category));
+  });
+  return out;
+}
+
+/** @deprecated use getCategoryRankSummaryByFormat_ */
+function getCategoryRankSummary_() {
+  const by = getCategoryRankSummaryByFormat_();
+  return [].concat(by.ebook, by.paperback, by.hardcover, by.other);
 }
