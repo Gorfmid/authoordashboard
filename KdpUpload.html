@@ -101,6 +101,10 @@
       It will be processed in place — no extra sheets are added to your workbook.
     </p>
     <p>
+      <strong>Lifetime only:</strong> use an All-time / full-life report.
+      Partial date-range reports are detected and will <em>not</em> overwrite Lifetime Units, KENP, or Royalties.
+    </p>
+    <p>
       Need the file?
       <a href="https://kdp.amazon.com/en_US/reports-new" target="_blank" rel="noopener">Open KDP Reports</a>
     </p>
@@ -125,8 +129,26 @@
         'KENP Read',
         'eBook Royalty',
         'Paperback Royalty',
-        'Hardcover Royalty'
+        'Hardcover Royalty',
+        'Summary'
       ];
+
+      function normalizeSheetRows(rows) {
+        return (rows || []).map(function (row) {
+          const o = {};
+          Object.keys(row).forEach(function (k) {
+            var v = row[k];
+            if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
+              const y = v.getFullYear();
+              const m = String(v.getMonth() + 1).padStart(2, '0');
+              const d = String(v.getDate()).padStart(2, '0');
+              v = y + '-' + m + '-' + d;
+            }
+            o[k] = v;
+          });
+          return o;
+        });
+      }
 
       const WAIT_MESSAGES = [
         'Updating Manual Entry…',
@@ -221,8 +243,9 @@
 
           NEEDED.forEach(function (name, idx) {
             if (!wb.Sheets[name]) return;
-            payload.sheets[name] = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' });
-            found++;
+            const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '', raw: false });
+            payload.sheets[name] = normalizeSheetRows(rows);
+            if (name !== 'Summary') found++;
             setProgress(30 + Math.round(((idx + 1) / NEEDED.length) * 25), 'Parsed: ' + name, false);
           });
 

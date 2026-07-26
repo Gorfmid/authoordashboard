@@ -103,7 +103,7 @@ Amazon page scraping can fail. Amazon may return CAPTCHA/robot-check pages, HTTP
 
 Apps Script cannot download KDP files while you are logged into Amazon, but upload is one click:
 
-1. Download a KDP **Dashboard** `.xlsx` (use a date range that covers the full life of each book for true lifetime totals)
+1. Download a KDP **Dashboard** `.xlsx` using **All time / full life** (not a short custom range)
 2. In your Sheet: **Author Dashboard → Upload KDP Sales Report**
 3. Choose the `.xlsx` file
 
@@ -111,17 +111,69 @@ That single action:
 
 - Parses the workbook in a dialog (no clutter sheets added)
 - Matches ASINs/ISBNs to Manual Entry Amazon rows
-- Fills Lifetime Units, Lifetime KU Pages (KENP), and Lifetime Royalties (USD)
-- Records a Sales History snapshot
-- Refreshes Catalog Summary and Dashboard
+- Fills **Lifetime** Units, KU Pages (KENP), and Royalties (USD) only when the report is not detected as partial
+- Splits royalties into **eBook / Print / KENP** (USD) and stores a **Royalty Periods** row for that reporting window
+- Refuses to lower existing lifetime totals; blocks partial date-range overwrites
+- Records a Sales History snapshot using the **report end date** for Week Ending when dates are present
+- Refreshes Catalog Summary, Dashboard, and Reconciliation
+
+Enter **KENPC** (Kindle Edition Normalized Page Count) on Manual Entry for the Kindle listing so Dashboard can show Estimated Full KU Read Royalty and KU Equivalent Reads. The **Estimated KENP Royalty Rate** is period-matched (KENP $ ÷ KENP pages from the same upload) and is not the finalized monthly Global Fund rate.
 
 Ranks are not changed. Use **Open KDP Reports Page** anytime for the download site + QR code.
+
+## Dashboard vs Visual Dashboard
+
+- **Dashboard** — portfolio numbers, **KU Estimates**, Catalog Performance (incl. KENP), category ranks, Meta sync health  
+- **Visual Dashboard** — charts only (rank score trend, orders, KENP), tab immediately after Dashboard  
+- **Royalty Periods** — historical estimated KU rate / royalty mix per KDP report window (foundation for future daily snapshots)
+
+## Events
+
+Editable **Events** sheet (and **Author Dashboard → Add Event**) for a **timeline**: book releases, Meta campaign start/end, price changes, free days, newsletters, big social posts. Optional `SOL-###` Book ID. Later these can appear as markers on charts. It is **not** a sales or ad-spend ledger.
+
+## Meta Daily vs Marketing History
+
+| Sheet | Purpose |
+|--------|---------|
+| **Meta Daily** | Daily API metrics (spend, impressions, clicks, link clicks) |
+| **Marketing History** | Manual one-off notes from Manual Entry (newsletter, promo, etc.) |
+
+Meta does **not** auto-write Marketing History (different grain; would flood it with daily rows). Use **Events** for “campaign started”, Meta Daily for spend/clicks.
+
+## Meta ads (local pull → CSV upload)
+
+Secrets stay in a local `.env` (see `.env.example`). Never put tokens in the Sheet.
+
+1. `pip install -r meta/requirements.txt`
+2. Copy `.env.example` → `.env` and set `META_ACCESS_TOKEN` + `META_AD_ACCOUNT_ID`
+3. `python meta/sync_meta_insights.py`
+4. **Author Dashboard → Upload Meta Insights CSV**
+
+Details: `meta/README.md`. Metrics are ad spend/clicks only — not Amazon conversions.
+
+## Stable internal IDs
+
+- **Book ID** = `SOL-001`, `SOL-002`, … (permanent). Do not use title as the relationship key.
+- **Listing ID** = `SOL-001-AMAZ-KIND-xxxx` (book + store + format + suffix).
+- ASIN/ISBN, marketplace, and format stay in their own columns.
+- One-time: **Author Dashboard → Migrate Stable Book IDs (SOL-001…)**.
+
+## Sales metrics (do not confuse these)
+
+| Concept | Where | Meaning |
+|--------|--------|---------|
+| Lifetime cumulative | Manual Entry + Sales History “Lifetime …” columns | All-time total at that moment |
+| Units/KENP/Royalties since previous snapshot | Sales History period columns | Change since the prior snapshot for that listing (first snapshot = 0) |
+| Reporting period from KDP | Report date range on import | Used for Week Ending / Last Data Date — **not** inferred from import day alone |
 
 ## Sales History shading and yearly reports
 
 - **Sales History** rows are lightly color-shaded by Book ID (adjacent books never share a color).
-- Auto-built year sheets named **Sales 2026**, **Sales 2027**, … contain a weekly units pivot (one column per book) and a stacked bar chart.
-- **Year over Year** summarizes units and royalties by book for each year found in Sales History.
+- Auto-built year sheets named **Sales 2026**, **Sales 2027**, … show period units, lifetime units, period KENP, and lifetime KENP with clear labels.
+- **Year over Year** summarizes **period** units/royalties by book, plus a **KENP by year** line chart (2026 vs 2027 as separate lines when both exist).
+- **Reconciliation** flags mismatches (does not auto-correct).
+
+After upgrading to Phase 0, run once: **Author Dashboard → Migrate Sales History (Phase 0)**.
 
 These sheets regenerate on **Refresh Everything**, sales snapshots, KDP upload, and the weekly sales trigger.
 
@@ -139,7 +191,7 @@ That runs at **Saturday night midnight Mountain time** (Sunday 12:00 AM `America
 
 Also install **Install Weekly Saturday Night Rank Update** for the Amazon rank fetch on the same schedule.
 
-Weekly sales changes are calculated by comparing current lifetime totals to the previous sales snapshot.
+Period changes are calculated by comparing current lifetime totals to the previous sales snapshot (not by guessing a calendar week from the import date).
 
 ## Testing Amazon fetch
 

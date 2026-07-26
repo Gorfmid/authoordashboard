@@ -4,3 +4,12 @@ package-lock.json
 .clasprc.json
 *.xlsx
 .DS_Store
+.env
+.env.*
+!.env.example
+meta/.env
+meta/out/
+__pycache__/
+*.pyc
+.venv/
+venv/

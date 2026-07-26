@@ -4,8 +4,19 @@ function styleHeader_(r){r.setFontWeight('bold').setBackground('#1f4e78').setFon
 function addFilter_(sh,cols){if(sh.getFilter())sh.getFilter().remove();sh.getRange(1,1,Math.max(sh.getMaxRows(),2),cols).createFilter();}
 function clearDataRows_(sh){if(sh.getLastRow()>=2)sh.getRange(2,1,sh.getLastRow()-1,sh.getMaxColumns()).clearContent();}
 function appendRows_(sh,rows){if(rows.length)sh.getRange(sh.getLastRow()+1,1,rows.length,rows[0].length).setValues(rows);}
-function generateBookId_(){return 'BK-'+Utilities.getUuid().replace(/-/g,'').substring(0,8).toUpperCase();}
-function generateListingId_(bookId,store,format){return [bookId,code_(store).substring(0,4),code_(format).substring(0,4),Utilities.getUuid().replace(/-/g,'').substring(0,4).toUpperCase()].join('-');}
+/** Next permanent book id: SOL-001, SOL-002, … */
+function generateBookId_(){
+  return formatSolBookId_(getMaxSolBookNumber_()+1);
+}
+/**
+ * Listing id: {BookId}-{STORE4}-{FORM4}-{SUFFIX}
+ * Optional suffix keeps listing identity stable across book-id migrations.
+ */
+function generateListingId_(bookId,store,format,suffix){
+  const suf=clean_(suffix).replace(/[^A-Za-z0-9]/g,'').toUpperCase().substring(0,8)
+    || Utilities.getUuid().replace(/-/g,'').substring(0,4).toUpperCase();
+  return [bookId,code_(store).substring(0,4),code_(format).substring(0,4),suf].join('-');
+}
 function code_(v){return String(v||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase();}
 function normalizeAsin_(v){const t=clean_(v).toUpperCase(),m=t.match(/\/(?:DP|GP\/PRODUCT)\/([A-Z0-9]{10})/i)||t.match(/\b([A-Z0-9]{10})\b/);return m?m[1]:'';}
 function clean_(v){return String(v===null||v===undefined?'':v).trim();}
@@ -38,10 +49,66 @@ function clearBlockUnmerged_(sheet,startRow,startCol,numRows,numCols){
   sheet.getRange(startRow,startCol,numRows,numCols).clearContent().clearFormat();
 }
 function mergeRowSafe_(sheet,row,startCol,numCols){
+  // Never merge across a freeze boundary — unfreeze first.
+  try{sheet.setFrozenRows(0);}catch(e){}
+  try{sheet.setFrozenColumns(0);}catch(e){}
   const range=sheet.getRange(row,startCol,1,numCols);
   try{
     const merges=range.getMergedRanges();
     merges.forEach(m=>{try{m.breakApart();}catch(e){}});
   }catch(e){}
   return range.merge();
+}
+
+/** Clear freeze + merges so rebuilds never hit "can't merge frozen and non-frozen columns". */
+function prepareSheetForRebuild_(sh){
+  try{sh.setFrozenRows(0);}catch(e){}
+  try{sh.setFrozenColumns(0);}catch(e){}
+  try{
+    sh.getMergedRanges().forEach(m=>{try{m.breakApart();}catch(e){}});
+  }catch(e){
+    try{
+      const mr=Math.min(sh.getMaxRows(),200);
+      const mc=Math.min(sh.getMaxColumns(),40);
+      sh.getRange(1,1,mr,mc).getMergedRanges().forEach(m=>{try{m.breakApart();}catch(e2){}});
+    }catch(e3){}
+  }
+}
+
+/**
+ * Banner/legend row without merge (safe with frozen columns).
+ * Styles a block and writes text only in the first cell.
+ */
+/** Sheets kept for diagnostics / history but not shown in the tab bar. */
+function getDiagnosticSheetNames_(){
+  return [
+    AD.SHEETS.RECONCILE,
+    AD.SHEETS.META_SYNC,
+    AD.SHEETS.ROYALTY_PERIODS
+  ];
+}
+
+/** Hide diagnostic sheets. Call after create, rebuild, or tab reordering (reorder unhides). */
+function hideDiagnosticSheets_(){
+  const ss=SpreadsheetApp.getActiveSpreadsheet();
+  getDiagnosticSheetNames_().forEach(name=>{
+    const sh=ss.getSheetByName(name);
+    if(!sh)return;
+    try{sh.hideSheet();}catch(e){}
+  });
+}
+
+function setBannerRow_(sh,row,numCols,text,opts){
+  opts=opts||{};
+  const cols=Math.max(1,numCols||1);
+  const range=sh.getRange(row,1,1,cols);
+  try{range.getMergedRanges().forEach(m=>{try{m.breakApart();}catch(e){}});}catch(e){}
+  range.clearContent().clearFormat()
+    .setBackground(opts.background||'#FFF8E7')
+    .setFontColor(opts.fontColor||'#333333')
+    .setFontWeight(opts.bold?'bold':'normal')
+    .setFontSize(opts.fontSize||10)
+    .setWrap(true);
+  sh.getRange(row,1).setValue(text||'').setHorizontalAlignment('left').setVerticalAlignment('middle');
+  if(opts.rowHeight)sh.setRowHeight(row,opts.rowHeight);
 }

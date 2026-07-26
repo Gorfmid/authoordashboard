@@ -24,6 +24,10 @@ function rebuildCatalogSummary_() {
         units: 0,
         ku: 0,
         roy: 0,
+        royEbook: 0,
+        royPrint: 0,
+        royKenp: 0,
+        kenpc: '',
         reviews: 0,
         ratings: [],
         dates: []
@@ -37,6 +41,13 @@ function rebuildCatalogSummary_() {
     b.units += number_(r[AD.COL.UNITS]);
     b.ku += number_(r[AD.COL.KU]);
     b.roy += number_(r[AD.COL.ROYALTIES]);
+    b.royEbook += number_(r[AD.COL.ROYALTY_EBOOK]);
+    b.royPrint += number_(r[AD.COL.ROYALTY_PRINT]);
+    b.royKenp += number_(r[AD.COL.ROYALTY_KENP]);
+    const kenpcVal = r[AD.COL.KENPC];
+    if ((b.kenpc === '' || b.kenpc == null) && kenpcVal !== '' && kenpcVal != null && number_(kenpcVal) > 0) {
+      b.kenpc = number_(kenpcVal);
+    }
     b.reviews += number_(r[AD.COL.REVIEWS]);
     if (number_(r[AD.COL.RATING]) > 0) b.ratings.push(number_(r[AD.COL.RATING]));
     if (isValidDate_(r[AD.COL.LAST_DATA_DATE])) b.dates.push(new Date(r[AD.COL.LAST_DATA_DATE]));
@@ -65,16 +76,23 @@ function rebuildCatalogSummary_() {
       b.reviews,
       b.ratings.length ? average_(b.ratings) : '',
       b.dates.length ? new Date(Math.max(...b.dates.map(d => d.getTime()))) : '',
-      lastRank.get(b.id) || ''
+      lastRank.get(b.id) || '',
+      b.royEbook,
+      b.royPrint,
+      b.royKenp,
+      b.kenpc === '' || b.kenpc == null ? '' : b.kenpc
     ]);
 
   if (out.length) catalog.getRange(2, 1, out.length, AD.CATALOG_HEADERS.length).setValues(out);
   catalog.getRange('F2:F').setNumberFormat('#,##0');
   catalog.getRange('G2:G').setNumberFormat('m/d/yyyy');
-  catalog.getRange('H2:P').setNumberFormat('#,##0');
+  catalog.getRange('H2:N').setNumberFormat('#,##0');
   catalog.getRange('O2:O').setNumberFormat('$#,##0.00');
+  catalog.getRange('P2:P').setNumberFormat('#,##0');
   catalog.getRange('Q2:Q').setNumberFormat('0.0');
   catalog.getRange('R2:S').setNumberFormat('m/d/yyyy');
+  catalog.getRange('T2:V').setNumberFormat('$#,##0.00');
+  catalog.getRange('W2:W').setNumberFormat('#,##0');
 }
 
 function ensureCatalogSchema_() {

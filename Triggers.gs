@@ -26,14 +26,16 @@ function scheduledWeeklyUpdate() {
   refreshSalesReports_();
   rebuildCatalogSummary_();
   refreshDashboard_();
+  rebuildReconciliationSheet_();
   lockAutomaticSheets();
 }
 
 function recordCurrentSnapshotSilent_() {
   ensureRankHistorySchema_();
+  ensureSalesHistorySchema_();
   const rows = getInputRows_();
   const saturday = getMostRecentWeekEndingSaturday_();
-  recordRankSnapshot_(rows, saturday, saturday);
+  // Sales snapshot only — ranks are written by scheduledWeeklyRankUpdate / updateAmazonRanks_.
   recordSalesSnapshot_(rows, saturday, saturday);
 }
 

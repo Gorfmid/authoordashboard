@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top" />
+    <style>
+      body { font-family: Arial, Helvetica, sans-serif; margin: 16px; color: #222; }
+      h2 { margin: 0 0 8px; font-size: 16px; }
+      p { margin: 0 0 12px; font-size: 13px; line-height: 1.4; color: #444; }
+      .box {
+        border: 1px dashed #9aa7b5; background: #f7f9fb; border-radius: 8px;
+        padding: 14px; text-align: center;
+      }
+      input[type="file"] { width: 100%; margin: 8px 0 12px; }
+      button {
+        background: #1f4e78; color: #fff; border: 0; border-radius: 6px;
+        padding: 10px 14px; font-size: 13px; cursor: pointer;
+      }
+      button:disabled { background: #9aa7b5; cursor: default; }
+      #status { margin-top: 10px; font-size: 12px; white-space: pre-wrap; min-height: 36px; }
+      .err { color: #a12622; }
+      .ok { color: #0b6b3a; }
+      code { font-size: 11px; background: #eee; padding: 1px 4px; border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <h2>Upload Meta insights CSV</h2>
+    <p>
+      Run <code>meta/sync_meta_insights.py</code> locally (uses <code>.env</code>), then upload the CSV it writes.
+      Secrets never go in this Sheet.
+    </p>
+    <p>
+      These are <strong>ad metrics only</strong> — not Amazon conversions.
+    </p>
+    <div class="box">
+      <input id="file" type="file" accept=".csv,text/csv" />
+      <button id="go" disabled>Upload &amp; upsert Meta Daily</button>
+    </div>
+    <div id="status">Select the Meta insights CSV file.</div>
+    <script>
+      const fileInput = document.getElementById('file');
+      const goBtn = document.getElementById('go');
+      const status = document.getElementById('status');
+
+      function parseCsv(text) {
+        const rows = [];
+        let i = 0, field = '', row = [], inQuotes = false;
+        const pushField = () => { row.push(field); field = ''; };
+        const pushRow = () => {
+          if (row.length === 1 && row[0] === '' && !rows.length) { row = []; return; }
+          rows.push(row); row = [];
+        };
+        while (i < text.length) {
+          const c = text[i];
+          if (inQuotes) {
+            if (c === '"') {
+              if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+              inQuotes = false; i++; continue;
+            }
+            field += c; i++; continue;
+          }
+          if (c === '"') { inQuotes = true; i++; continue; }
+          if (c === ',') { pushField(); i++; continue; }
+          if (c === '\n') { pushField(); pushRow(); i++; continue; }
+          if (c === '\r') { i++; continue; }
+          field += c; i++;
+        }
+        if (field.length || row.length) { pushField(); pushRow(); }
+        if (!rows.length) return [];
+        const headers = rows[0].map(h => String(h || '').trim());
+        return rows.slice(1).filter(r => r.some(cell => String(cell || '').trim() !== '')).map(r => {
+          const obj = {};
+          headers.forEach((h, idx) => { obj[h] = r[idx] != null ? r[idx] : ''; });
+          return obj;
+        });
+      }
+
+      fileInput.addEventListener('change', function () {
+        goBtn.disabled = !(fileInput.files && fileInput.files[0]);
+        status.className = '';
+        status.textContent = fileInput.files && fileInput.files[0]
+          ? ('Ready: ' + fileInput.files[0].name)
+          : 'Select the Meta insights CSV file.';
+      });
+
+      goBtn.addEventListener('click', async function () {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        goBtn.disabled = true;
+        fileInput.disabled = true;
+        status.className = '';
+        status.textContent = 'Reading CSV…';
+        try {
+          const text = await file.text();
+          const rows = parseCsv(text);
+          if (!rows.length) throw new Error('CSV had no data rows.');
+          status.textContent = 'Upserting ' + rows.length + ' row(s) into Meta Daily…';
+          google.script.run
+            .withSuccessHandler(function (msg) {
+              status.className = 'ok';
+              status.textContent = msg || 'Import complete.';
+              setTimeout(function () { google.script.host.close(); }, 2000);
+            })
+            .withFailureHandler(function (err) {
+              goBtn.disabled = false;
+              fileInput.disabled = false;
+              status.className = 'err';
+              status.textContent = (err && err.message) ? err.message : String(err);
+            })
+            .processMetaInsightsUpload({ fileName: file.name, rows: rows });
+        } catch (err) {
+          goBtn.disabled = false;
+          fileInput.disabled = false;
+          status.className = 'err';
+          status.textContent = (err && err.message) ? err.message : String(err);
+        }
+      });
+    </script>
+  </body>
+</html>

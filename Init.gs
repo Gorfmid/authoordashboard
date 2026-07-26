@@ -4,7 +4,11 @@ function buildInputSheet_(sheet) {
   styleHeader_(sheet.getRange(1,1,1,AD.INPUT_HEADERS.length));
   sheet.setFrozenRows(1);
   sheet.setFrozenColumns(3);
-  const widths = [115,175,260,190,75,145,105,125,135,145,130,130,170,120,125,230,115,125,130,135,100,105,125,120,140,270,105,220,280,220];
+  const widths = [
+    115,175,260,190,75,145,105,125,135,145,130,130,170,120,125,230,
+    115,125,130,135,100,105,125,120,140,270,105,220,280,
+    130,130,130,90,220
+  ];
   widths.forEach((w,i)=>sheet.setColumnWidth(i+1,w));
   applyInputValidation_(sheet);
   applyInputFormats_(sheet);
@@ -19,19 +23,22 @@ function buildInputSheet_(sheet) {
  */
 function applyManualEntryColumnVisibility_(sheet) {
   const sh = sheet || getRequiredSheet_(AD.SHEETS.INPUT);
-  const autoRanges = ['A:B', 'O:P', 'T:W', 'AD:AD'];
+  // Auto: IDs, listing URL/release, Amazon rank fields, imported royalty splits (incl. estimated KENP $).
+  // KENPC stays editable/visible.
+  const autoRanges = ['A:B', 'O:P', 'T:W', 'AD:AF'];
   autoRanges.forEach(a1 => {
     sh.getRange(a1).setBackground('#eeeeee').setFontColor('#666666');
   });
 
-  // Keep Process Status visible so fetch results are obvious.
-  try { sh.showColumns(30, 1); } catch (e) {}
+  try { sh.showColumns(AD.COL.KENPC + 1, 1); } catch (e) {}
+  try { sh.showColumns(AD.COL.PROCESS_STATUS + 1, 1); } catch (e) {}
 
   // 1-based column index, count
   const hideGroups = [
     [1, 2],  // Book ID, Listing ID
     [15, 2], // Listing Release Date, Store URL
-    [20, 4]  // Current Overall Rank, Rating, Reviews, Last Data Date (see Rank History / Catalog)
+    [20, 4], // Current Overall Rank, Rating, Reviews, Last Data Date
+    [30, 3]  // eBook / Print / estimated KENP royalties (auto)
   ];
   hideGroups.forEach(pair => {
     try { sh.hideColumns(pair[0], pair[1]); } catch (e) {}
@@ -44,7 +51,7 @@ function hideInternalIdColumns_(sheet) {
 
 function buildDashboardSheet_(sheet) {
   sheet.clear();
-  sheet.getRange('A1:H1').merge().setValue('Author Portfolio Dashboard')
+  sheet.getRange('A1:K1').merge().setValue('Author Portfolio Dashboard')
     .setFontSize(22).setFontWeight('bold').setHorizontalAlignment('center')
     .setBackground('#1f4e78').setFontColor('#ffffff');
   sheet.setRowHeight(1,46);
@@ -52,16 +59,16 @@ function buildDashboardSheet_(sheet) {
   styleHeader_(sheet.getRange('A3:B3'));
   const labels = [
     'Total Books','Published Books','Books in Progress','Total Store Listings','Live Store Listings',
-    'Total Published Words','Lifetime Unit Sales','Lifetime KU Pages','Lifetime Royalties','Total Reviews',
-    'Average Rating','Best Rank Ever','Current Best Rank','Latest Rank Update','Top-Ranked Book',
-    'Rank Trend (lower is better)'
+    'Total Published Words','Lifetime Unit Sales','Lifetime KU Pages','Lifetime Royalties (USD, est.)','Total Reviews',
+    'Average Rating','Best Rank Ever','Current Rank','Latest Rank Update','Top-Ranked Book',
+    'Rank Trend (lower is better)','Last Meta Sync','Meta Sync Status'
   ];
   sheet.getRange(4,1,labels.length,2).setValues(labels.map(x=>[x,'']));
-  sheet.getRange('D3:H3').merge().setValue('Catalog Performance').setFontWeight('bold')
+  sheet.getRange('F3:K3').merge().setValue('Catalog Performance').setFontWeight('bold')
     .setHorizontalAlignment('center').setBackground('#1f4e78').setFontColor('#ffffff');
-  sheet.getRange('D4:H4').setValues([['Book','Stage','Units','Royalties','Best Rank']]);
-  styleHeader_(sheet.getRange('D4:H4'));
-  [225,145,30,270,135,105,125,115,110,200].forEach((w,i)=>sheet.setColumnWidth(i+1,w));
+  sheet.getRange('F4:K4').setValues([['Book','Stage','Units','KENP Read','Royalties (USD)','Best Rank']]);
+  styleHeader_(sheet.getRange('F4:K4'));
+  [225,220,30,40,40,220,110,90,100,110,100].forEach((w,i)=>sheet.setColumnWidth(i+1,w));
 }
 
 function buildCatalogSheet_(sheet) {
@@ -70,7 +77,8 @@ function buildCatalogSheet_(sheet) {
   styleHeader_(sheet.getRange(1,1,1,AD.CATALOG_HEADERS.length));
   sheet.setFrozenRows(1);
   sheet.setFrozenColumns(2);
-  [115,260,190,75,145,105,125,100,110,110,125,120,115,125,130,110,105,130,130].forEach((w,i)=>sheet.setColumnWidth(i+1,w));
+  [115,260,190,75,145,105,125,100,110,110,125,120,115,125,130,110,105,130,130,120,120,120,90]
+    .forEach((w,i)=>sheet.setColumnWidth(i+1,w));
   addFilter_(sheet, AD.CATALOG_HEADERS.length);
 }
 
@@ -103,7 +111,7 @@ function seedFirstBook_(sheet) {
 
 function orderSheets_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  [AD.SHEETS.INPUT,AD.SHEETS.DASHBOARD,AD.SHEETS.CATALOG,AD.SHEETS.SALES,AD.SHEETS.RANKS,AD.SHEETS.MARKETING].forEach((name,i)=>{
+  [AD.SHEETS.INPUT,AD.SHEETS.DASHBOARD,AD.SHEETS.VISUAL,AD.SHEETS.CATALOG,AD.SHEETS.SALES,AD.SHEETS.RANKS,AD.SHEETS.MARKETING].forEach((name,i)=>{
     const sh=ss.getSheetByName(name); if(sh){ss.setActiveSheet(sh);ss.moveActiveSheet(i+1);}
   });
   orderReportSheets_();
