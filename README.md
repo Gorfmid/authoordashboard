@@ -59,7 +59,7 @@ Reload the Google Sheet after pushing so the **Author Dashboard** menu refreshes
 ## Initialize the workbook
 
 1. Reload the Google Sheet.
-2. Open **Author Dashboard → Initialize — ERASE AND REBUILD**.
+2. Open **Author Dashboard → Advanced → Initialize — ERASE AND REBUILD**.
 3. Approve permissions and confirm the reset.
 
 You can also run `initializeDashboard` directly from Apps Script.
@@ -82,9 +82,8 @@ Book ID and Listing ID are generated automatically. Do not overwrite them.
 
 Menu:
 
-- **Author Dashboard → Update Amazon Rankings Now**
-- **Author Dashboard → Install Weekly Rank Update**
-- **Author Dashboard → Remove Weekly Rank Update**
+- Menu (2 items only): **Refresh Everything**, **Upload KDP Sales Report**
+- Ranks / Meta / daily jobs / migrations: run the function from **Extensions → Apps Script** (not in the menu)
 
 What the updater does:
 
@@ -123,40 +122,34 @@ Ranks are not changed. Use **Open KDP Reports Page** anytime for the download si
 
 ## Dashboard vs Visual Dashboard
 
-- **Dashboard** — portfolio numbers, **KU Estimates**, Catalog Performance (incl. KENP), category ranks, Meta sync health  
-- **Visual Dashboard** — charts only (rank score trend, orders, KENP), tab immediately after Dashboard  
+- **Dashboard** — portfolio numbers, Catalog Performance, category ranks, Meta sync health  
+- **Visual Dashboard** — charts only (2 per row: rank trend, orders, KENP), tab immediately after Dashboard  
 - **Royalty Periods** — historical estimated KU rate / royalty mix per KDP report window (foundation for future daily snapshots)
 
 ## Events
 
-Editable **Events** sheet (and **Author Dashboard → Add Event**) for a **timeline**: book releases, Meta campaign start/end, price changes, free days, newsletters, big social posts. Optional `SOL-###` Book ID. Later these can appear as markers on charts. It is **not** a sales or ad-spend ledger.
+Editable **Events** sheet (and **Author Dashboard → Advanced → Add Event**) for a **timeline**: book releases, Meta campaign start/end, price changes, free days, newsletters, big social posts. Optional `SOL-###` Book ID. Later these can appear as markers on charts. It is **not** a sales or ad-spend ledger.
 
 ## Meta Daily vs Marketing History
 
 | Sheet | Purpose |
 |--------|---------|
 | **Meta Daily** | Daily API metrics (spend, impressions, clicks, link clicks) |
-| **Marketing History** | Manual one-off notes from Manual Entry (newsletter, promo, etc.) |
+| **Marketing History** | Manual notes + one auto row per Meta campaign (rollup, not daily flood) |
 
-Meta does **not** auto-write Marketing History (different grain; would flood it with daily rows). Use **Events** for “campaign started”, Meta Daily for spend/clicks.
+## Meta ads (Refresh Everything)
 
-## Meta ads (local pull → CSV upload)
+1. Once: **Extensions → Apps Script** → select `configureMetaApiCredentials` → **Run** → paste token + `act_…` account id (stored in Document Properties, not sheet cells).
+2. **Author Dashboard → Refresh Everything** pulls the last 30 days from the Meta Graph API, upserts **Meta Daily**, and refreshes Marketing / Events / Dashboard.
 
-Secrets stay in a local `.env` (see `.env.example`). Never put tokens in the Sheet.
-
-1. `pip install -r meta/requirements.txt`
-2. Copy `.env.example` → `.env` and set `META_ACCESS_TOKEN` + `META_AD_ACCOUNT_ID`
-3. `python meta/sync_meta_insights.py`
-4. **Author Dashboard → Upload Meta Insights CSV**
-
-Details: `meta/README.md`. Metrics are ad spend/clicks only — not Amazon conversions.
+CSV fallback (optional): local `meta/sync_meta_insights.py` + run `uploadMetaInsightsCsv` from Apps Script. Metrics are ad spend/clicks only — not Amazon conversions.
 
 ## Stable internal IDs
 
 - **Book ID** = `SOL-001`, `SOL-002`, … (permanent). Do not use title as the relationship key.
 - **Listing ID** = `SOL-001-AMAZ-KIND-xxxx` (book + store + format + suffix).
 - ASIN/ISBN, marketplace, and format stay in their own columns.
-- One-time: **Author Dashboard → Migrate Stable Book IDs (SOL-001…)**.
+- One-time: **Author Dashboard → Advanced → Migrate Stable Book IDs (SOL-001…)**.
 
 ## Sales metrics (do not confuse these)
 
@@ -173,23 +166,21 @@ Details: `meta/README.md`. Metrics are ad spend/clicks only — not Amazon conve
 - **Year over Year** summarizes **period** units/royalties by book, plus a **KENP by year** line chart (2026 vs 2027 as separate lines when both exist).
 - **Reconciliation** flags mismatches (does not auto-correct).
 
-After upgrading to Phase 0, run once: **Author Dashboard → Migrate Sales History (Phase 0)**.
+After upgrading to Phase 0, run once: **Author Dashboard → Advanced → Migrate Sales History (Phase 0)**.
 
-These sheets regenerate on **Refresh Everything**, sales snapshots, KDP upload, and the weekly sales trigger.
+These sheets regenerate on **Refresh Everything**, sales snapshots, KDP upload, and the daily 5:00 AM trigger.
 
-## Weekly sales snapshots
+## Daily schedule + sales snapshots
 
 Update lifetime totals in Manual Entry (manually or via KDP import), then choose:
 
-**Author Dashboard → Record Current Snapshot**
+**Author Dashboard → Advanced → Record Current Snapshot**
 
 Or install:
 
-**Author Dashboard → Install Weekly Saturday Night Update**
+**Author Dashboard → Advanced → Install Daily 5:00 AM Jobs**
 
-That runs at **Saturday night midnight Mountain time** (Sunday 12:00 AM `America/Boise`). Week ending is Saturday.
-
-Also install **Install Weekly Saturday Night Rank Update** for the Amazon rank fetch on the same schedule.
+That runs every morning at **5:00 AM** `America/Boise` (sales/dashboard refresh + Amazon ranks). Sales History **upserts** the current week-ending Saturday row (no duplicate daily sales weeks). Ranks are stamped with that morning’s date.
 
 Period changes are calculated by comparing current lifetime totals to the previous sales snapshot (not by guessing a calendar week from the import date).
 

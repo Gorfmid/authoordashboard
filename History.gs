@@ -33,6 +33,7 @@ function migrateSalesHistoryPhase0() {
   if (answer !== ui.Button.YES) return;
 
   ensureSalesHistorySchema_();
+  const repairedKenpWeeks = repairKenpOnlySundayWeekEndings_();
   const removedDupWeeks = consolidateSalesHistoryByWeekEnding_();
   const recomputed = recomputeSalesPeriodChangesFromLifetime_();
   const removedRanks = cleanupManualRankSnapshots_();
@@ -43,6 +44,7 @@ function migrateSalesHistoryPhase0() {
   lockAutomaticSheets();
   ui.alert(
     'Phase 0 sales migration complete.\n\n' +
+      'KENP-only Sunday week endings remapped: ' + repairedKenpWeeks + '\n' +
       'Duplicate week rows removed: ' + removedDupWeeks + '\n' +
       'Rows recomputed: ' + recomputed.rowsUpdated + '\n' +
       'Listings touched: ' + recomputed.listingsTouched + '\n' +
@@ -373,6 +375,35 @@ function getLatestSalesByListingBeforeWeek_(listing, weekEnd) {
     }
   });
   return best;
+}
+
+/**
+ * Fix phantom Week Ending buckets from KENP-only Sundays
+ * (e.g. Snapshot 7/26 → Week Ending 8/1 with 0 unit sales).
+ * Remaps Week Ending to the prior Saturday, then consolidate merges with that week.
+ */
+function repairKenpOnlySundayWeekEndings_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AD.SHEETS.SALES);
+  if (!sh || sh.getLastRow() < 2) return 0;
+  const values = sh.getRange(2, 1, sh.getLastRow() - 1, AD.SALES_HEADERS.length).getValues();
+  let fixed = 0;
+  values.forEach((r, i) => {
+    if (!isValidDate_(r[0]) || !isValidDate_(r[1])) return;
+    const snap = startOfDay_(new Date(r[0]));
+    const week = startOfDay_(new Date(r[1]));
+    if (snap.getDay() !== 0) return; // Sunday only
+    if (dateKey_(getWeekEndingDate_(snap)) !== dateKey_(week)) return;
+    const periodUnits = number_(r[9]);
+    const periodRoy = number_(r[13]);
+    // No paid-unit / royalty activity that period — week was driven by KENP dating
+    if (periodUnits > 0 || periodRoy > 0.009) return;
+    const prevSat = startOfDay_(new Date(snap));
+    prevSat.setDate(prevSat.getDate() - 1);
+    if (dateKey_(prevSat) === dateKey_(week)) return;
+    sh.getRange(i + 2, 2).setValue(prevSat);
+    fixed++;
+  });
+  return fixed;
 }
 
 /**

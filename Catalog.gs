@@ -53,6 +53,15 @@ function rebuildCatalogSummary_() {
     if (isValidDate_(r[AD.COL.LAST_DATA_DATE])) b.dates.push(new Date(r[AD.COL.LAST_DATA_DATE]));
   });
 
+  // If KENP $ was never written to Manual Entry, still show pages × estimated rate on Catalog.
+  const kenpRate = getEstimatedKenpRoyaltyRate_();
+  books.forEach(b => {
+    if (!(b.ku > 0) || !(kenpRate > 0) || b.royKenp > 0) return;
+    const est = Math.round(b.ku * kenpRate * 100) / 100;
+    b.royKenp = est;
+    b.roy = Math.round((b.roy + est) * 100) / 100;
+  });
+
   const best = getBestOverallRanksByBook_();
   const lastRank = getLastRankUpdateByBook_();
   const out = [...books.values()]

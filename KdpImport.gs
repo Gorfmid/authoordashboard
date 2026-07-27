@@ -3,8 +3,8 @@
  * Parses the .xlsx in a dialog (no clutter sheets), then updates Manual Entry,
  * records a sales snapshot, and refreshes Catalog + Dashboard.
  *
- * Phase 0: never let a partial date-range report overwrite lifetime totals;
- * use report date range for Week Ending when available.
+ * Phase 0: never let a partial date-range report REPLACE lifetime with lower totals;
+ * short-range exports ADD to lifetime instead. Use report dates for Week Ending.
  */
 
 function openKdpReportsPage() {
@@ -85,6 +85,7 @@ function processKdpSalesUpload(payload) {
       kenpRoyaltiesInReport: !!meta.kenpRoyaltiesInReport,
       kenpRateUsed: kenpRateApply.rate,
       spanDays: meta.spanDays,
+      isMonthReport: !!meta.isMonthReport,
       isPartial: meta.isPartial,
       reasons: meta.reasons,
       warnings: meta.warnings || []
@@ -110,8 +111,8 @@ function processKdpSalesUpload(payload) {
     const periodMetrics = upsertRoyaltyPeriodFromKdp_(totals, meta, payload.fileName || '');
     summary.periodMetrics = periodMetrics;
 
-    // Only snapshot when lifetime writes occurred (partial blocks skip lifetime).
-    if (summary.listingsUpdated > 0 && !summary.blockedPartial) {
+    // Snapshot when Manual Entry lifetime changed (full replace or partial add).
+    if (summary.listingsUpdated > 0) {
       const rows = getInputRows_();
       const today = getSpreadsheetToday_();
       // Week Ending / snapshot anchor from ORDER/ROYALTY dates only — not KENP.
@@ -120,6 +121,7 @@ function processKdpSalesUpload(payload) {
       const snapDate = salesAnchor;
       const week = getWeekEndingDate_(salesAnchor);
       recordSalesSnapshot_(rows, snapDate, week, salesAnchor, { upsertByWeek: true });
+      repairKenpOnlySundayWeekEndings_();
       consolidateSalesHistoryByWeekEnding_();
       recomputeSalesPeriodChangesFromLifetime_();
       summary.salesSnapshot = true;
@@ -180,38 +182,41 @@ function analyzeKdpReportMeta_(found, fileName, totals) {
   const reasons = [];
   const warnings = [];
   const name = String(fileName || '').toLowerCase();
-  const nameLooksPartial = /partial|last\s*\d+\s*day|custom.?range|\d+\s*days?/i.test(name);
-  if (nameLooksPartial) {
-    reasons.push('Filename suggests a date-range / partial export.');
-  }
+  // KDP Dashboard typical options: Month / Today / Yesterday (no All-time).
+  const monthStyle = looksLikeKdpMonthReport_(minDate, maxDate, spanDays, name);
+  const dayStyle =
+    !monthStyle &&
+    spanDays != null &&
+    spanDays > 0 &&
+    spanDays <= 2;
 
   const lowerCount = countReportLowerThanLifetime_(totals || {});
   const mostlyLower =
     lowerCount.compared > 0 &&
     lowerCount.lower >= Math.max(1, Math.ceil(lowerCount.compared * 0.5));
-  if (mostlyLower) {
-    reasons.push(
-      'Report totals are lower than current Manual Entry lifetime for ' +
-        lowerCount.lower + ' of ' + lowerCount.compared +
-        ' matched listing metric(s). Partial reports must not replace lifetime totals.'
-    );
-  }
 
-  if (
-    spanDays != null &&
-    spanDays > 0 &&
-    spanDays < AD.KDP_PARTIAL_MAX_SPAN_DAYS &&
-    mostlyLower
-  ) {
-    reasons.push(
-      'Report date span is only ' + spanDays +
-        ' day(s) (' + dateKey_(minDate) + ' → ' + dateKey_(maxDate) +
-        ') and totals are below current lifetime — treating as partial.'
-    );
-  } else if (spanDays != null && spanDays > 0 && spanDays < AD.KDP_PARTIAL_MAX_SPAN_DAYS) {
+  if (monthStyle) {
     warnings.push(
+      'Month report — Manual Entry updates to these totals (existing higher lifetime values are kept).'
+    );
+  } else if (dayStyle || /today|yesterday|last\s*\d+\s*day|partial|custom.?range/i.test(name)) {
+    if (mostlyLower || dayStyle) {
+      reasons.push(
+        'Today/Yesterday-style report (short range). Same-week uploads replace that week’s contribution.'
+      );
+    }
+    if (mostlyLower) {
+      reasons.push(
+        'Report totals are lower than current Manual Entry for ' +
+          lowerCount.lower + ' of ' + lowerCount.compared +
+          ' matched listing metric(s).'
+      );
+    }
+  } else if (mostlyLower && spanDays != null && spanDays < AD.KDP_PARTIAL_MAX_SPAN_DAYS) {
+    reasons.push(
       'Report date span is ' + spanDays +
-        ' day(s). If this was a custom range (not All time), do not use it for lifetime totals.'
+        ' day(s) (' + dateKey_(minDate) + ' → ' + dateKey_(maxDate) +
+        ') and totals are below current lifetime — treating as short-range.'
     );
   }
 
@@ -230,11 +235,29 @@ function analyzeKdpReportMeta_(found, fileName, totals) {
     maxKenpDate: maxKenpDate,
     summaryRoyaltyUsd: summaryRoyaltyUsd,
     spanDays: spanDays,
-    isPartial: reasons.length > 0,
+    isMonthReport: monthStyle,
+    isPartial: !monthStyle && reasons.length > 0,
     reasons: reasons,
     warnings: warnings,
     lowerCount: lowerCount
   };
+}
+
+/** Month / month-to-date is the normal KDP Dashboard export (no All-time option). */
+function looksLikeKdpMonthReport_(minDate, maxDate, spanDays, fileName) {
+  const name = String(fileName || '').toLowerCase();
+  if (/today|yesterday/.test(name) && !/month/.test(name)) return false;
+  if (/month|month.?to.?date|mtd/i.test(name)) return true;
+  if (!minDate || !maxDate || spanDays == null || spanDays < 8) return false;
+  try {
+    const a = new Date(minDate);
+    const b = new Date(maxDate);
+    if (a.getFullYear() !== b.getFullYear() || a.getMonth() !== b.getMonth()) return false;
+    // Same calendar month and at least ~a week (month-to-date mid-month is fine).
+    return spanDays >= 8;
+  } catch (e) {
+    return false;
+  }
 }
 
 function collectKdpDates_(found) {
@@ -340,8 +363,9 @@ function countReportLowerThanLifetime_(totals) {
 
 /**
  * Apply report totals to lifetime columns.
- * - Partial reports: block all lifetime writes
- * - Non-partial: never decrease an existing lifetime value (blank stays blank unless report has a value)
+ * - Month reports: store that month’s slice; lifetime = sum of all uploaded months
+ * - Today/Yesterday: REPLACE this week’s contribution only
+ * - Other: SET lifetime (never decrease)
  */
 function applyKdpTotalsToManualEntry_(totals, meta) {
   const sh = getRequiredSheet_(AD.SHEETS.INPUT);
@@ -357,16 +381,23 @@ function applyKdpTotalsToManualEntry_(totals, meta) {
     kenpRoyaltiesSet: 0,
     unmatchedIds: [],
     blockedPartial: false,
+    appliedAsAddition: false,
+    appliedAsWeekReplace: false,
+    appliedAsMonthContrib: false,
+    monthKey: '',
+    skippedDuplicatePartial: false,
     skippedLowerUnits: 0,
     skippedLowerKenp: 0,
     skippedLowerRoyalties: 0,
-    fieldsWritten: 0
+    fieldsWritten: 0,
+    partialReasons: (meta && meta.reasons) || []
   };
 
+  if (meta && meta.isMonthReport) {
+    return applyKdpMonthContribToManualEntry_(totals, meta, summary);
+  }
   if (meta && meta.isPartial) {
-    summary.blockedPartial = true;
-    summary.partialReasons = meta.reasons || [];
-    return summary;
+    return applyKdpWeekReplaceToManualEntry_(totals, meta, summary);
   }
 
   if (sh.getLastRow() < 2) return summary;
@@ -488,7 +519,401 @@ function applyKdpTotalsToManualEntry_(totals, meta) {
     }
   });
 
+  // Non-month full apply — drop short-range week tracking only.
+  if (summary.listingsUpdated > 0) {
+    try {
+      PropertiesService.getDocumentProperties().deleteProperty('AD_KDP_WEEK_PARTIAL_ADDS');
+      PropertiesService.getDocumentProperties().deleteProperty('AD_KDP_LAST_PARTIAL_FP');
+    } catch (e) {}
+  }
+
   return summary;
+}
+
+/**
+ * Month download workflow (KDP has no All-time):
+ * Each file replaces that calendar month’s contribution; lifetime = sum of months.
+ * - Upload July now, again in November → only July slice is replaced
+ * - Miss August → August missing until you upload it (lifetime undercounts until then)
+ */
+function applyKdpMonthContribToManualEntry_(totals, meta, summary) {
+  summary = summary || {};
+  summary.appliedAsMonthContrib = true;
+  summary.blockedPartial = false;
+
+  const anchor = (meta && (meta.maxDate || meta.minDate)) || getSpreadsheetToday_();
+  const monthKey = Utilities.formatDate(startOfDay_(anchor), AD.TZ, 'yyyy-MM');
+  summary.monthKey = monthKey;
+
+  const fingerprint = 'M|' + monthKey + '|' + kdpPartialFingerprint_(totals, meta);
+  const props = PropertiesService.getDocumentProperties();
+  if (fingerprint && fingerprint === String(props.getProperty('AD_KDP_LAST_PARTIAL_FP') || '')) {
+    summary.skippedDuplicatePartial = true;
+    summary.partialReasons = (meta.reasons || []).concat([
+      'Identical ' + monthKey + ' month report already applied — skipped.'
+    ]);
+    return summary;
+  }
+
+  const sh = getRequiredSheet_(AD.SHEETS.INPUT);
+  if (sh.getLastRow() < 2) return summary;
+
+  const store = readKdpMonthContribs_();
+  const monthSlice = {};
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, AD.INPUT_HEADERS.length).getValues();
+  const matchedKeys = new Set();
+  const listingByKey = {};
+
+  rows.forEach((r, i) => {
+    if (normalizeKey_(r[AD.COL.STORE]) !== 'amazon') return;
+    const listing = clean_(r[AD.COL.LISTING_ID]);
+    if (!listing) return;
+    listingByKey[listing] = { row: r, rowNum: i + 2 };
+    const keys = listingIdentifierKeys_(r);
+    let hit = null;
+    let hitKey = '';
+    for (let k = 0; k < keys.length; k++) {
+      if (totals[keys[k]]) {
+        hit = totals[keys[k]];
+        hitKey = keys[k];
+        break;
+      }
+    }
+    if (!hit) return;
+    matchedKeys.add(hitKey);
+    monthSlice[listing] = {
+      u: number_(hit.units),
+      k: number_(hit.kenp),
+      e: number_(hit.royaltyEbook),
+      p: number_(hit.royaltyPrint),
+      kr: Math.round(number_(hit.royaltyKenp) * 100) / 100
+    };
+  });
+
+  store[monthKey] = monthSlice;
+
+  // Lifetime per listing = sum of every stored month slice.
+  const sums = {};
+  Object.keys(store).forEach(mk => {
+    const slice = store[mk] || {};
+    Object.keys(slice).forEach(listing => {
+      if (!sums[listing]) sums[listing] = { u: 0, k: 0, e: 0, p: 0, kr: 0 };
+      const s = slice[listing];
+      sums[listing].u += number_(s.u);
+      sums[listing].k += number_(s.k);
+      sums[listing].e += number_(s.e);
+      sums[listing].p += number_(s.p);
+      sums[listing].kr += number_(s.kr);
+    });
+  });
+
+  const today = getSpreadsheetToday_();
+  Object.keys(sums).forEach(listing => {
+    const info = listingByKey[listing];
+    if (!info) return;
+    const sum = sums[listing];
+    const nextEbook = Math.round(sum.e * 100) / 100;
+    const nextPrint = Math.round(sum.p * 100) / 100;
+    const nextKenpR = Math.round(sum.kr * 100) / 100;
+    const nextTotal = Math.round((nextEbook + nextPrint + nextKenpR) * 100) / 100;
+    const rowNum = info.rowNum;
+    const r = info.row;
+
+    const changed =
+      number_(r[AD.COL.UNITS]) !== sum.u ||
+      number_(r[AD.COL.KU]) !== sum.k ||
+      Math.abs(number_(r[AD.COL.ROYALTY_EBOOK]) - nextEbook) > 0.009 ||
+      Math.abs(number_(r[AD.COL.ROYALTY_PRINT]) - nextPrint) > 0.009 ||
+      Math.abs(number_(r[AD.COL.ROYALTY_KENP]) - nextKenpR) > 0.009;
+
+    sh.getRange(rowNum, AD.COL.UNITS + 1).setValue(sum.u);
+    sh.getRange(rowNum, AD.COL.KU + 1).setValue(sum.k);
+    sh.getRange(rowNum, AD.COL.ROYALTY_EBOOK + 1).setValue(nextEbook);
+    sh.getRange(rowNum, AD.COL.ROYALTY_PRINT + 1).setValue(nextPrint);
+    sh.getRange(rowNum, AD.COL.ROYALTY_KENP + 1).setValue(nextKenpR);
+    sh.getRange(rowNum, AD.COL.ROYALTIES + 1).setValue(nextTotal);
+
+    if (changed || monthSlice[listing]) {
+      summary.listingsUpdated++;
+      summary.fieldsWritten++;
+      const slice = monthSlice[listing] || { u: 0, k: 0, e: 0, p: 0, kr: 0 };
+      summary.unitsSet += number_(slice.u);
+      summary.kuSet += number_(slice.k);
+      summary.royaltiesSet += Math.round((number_(slice.e) + number_(slice.p) + number_(slice.kr)) * 100) / 100;
+      summary.ebookRoyaltiesSet += number_(slice.e);
+      summary.printRoyaltiesSet += number_(slice.p);
+      summary.kenpRoyaltiesSet += number_(slice.kr);
+      sh.getRange(rowNum, AD.COL.LAST_DATA_DATE + 1).setValue(
+        meta && meta.maxDate ? meta.maxDate : today
+      );
+      sh.getRange(rowNum, AD.COL.PROCESS_STATUS + 1).setValue(
+        'KDP month ' + monthKey + ' stored. Lifetime = sum of months (' +
+          Object.keys(store).sort().join(', ') + ').'
+      );
+    }
+  });
+
+  Object.keys(totals).forEach(id => {
+    if (!matchedKeys.has(id)) {
+      const already = [...matchedKeys].some(k => totals[k] === totals[id]);
+      if (already) return;
+      summary.listingsUnmatched++;
+      summary.unmatchedIds.push(id);
+    }
+  });
+
+  if (summary.listingsUpdated > 0 || Object.keys(monthSlice).length) {
+    // Count update even when values unchanged so Sales History can refresh.
+    if (!summary.listingsUpdated && Object.keys(monthSlice).length) {
+      summary.listingsUpdated = Object.keys(monthSlice).length;
+    }
+    writeKdpMonthContribs_(store);
+    props.setProperty('AD_KDP_LAST_PARTIAL_FP', fingerprint);
+    summary.monthsStored = Object.keys(store).sort();
+  }
+  return summary;
+}
+
+function readKdpMonthContribs_() {
+  try {
+    const raw = PropertiesService.getDocumentProperties().getProperty('AD_KDP_MONTH_CONTRIBS');
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function writeKdpMonthContribs_(store) {
+  PropertiesService.getDocumentProperties().setProperty(
+    'AD_KDP_MONTH_CONTRIBS',
+    JSON.stringify(store || {})
+  );
+}
+
+/**
+ * Dashboard helper: which KDP month slices are stored, and any gaps through the current month.
+ * @returns {{ monthsOnFile: string, gapMessage: string, hasGap: boolean, gaps: string[] }}
+ */
+function getKdpMonthGapStatus_() {
+  const store = readKdpMonthContribs_();
+  const keys = Object.keys(store || {})
+    .filter(k => /^\d{4}-\d{2}$/.test(k))
+    .sort();
+  const today = getSpreadsheetToday_();
+  const currentKey = Utilities.formatDate(startOfDay_(today), AD.TZ, 'yyyy-MM');
+
+  if (!keys.length) {
+    return {
+      monthsOnFile: '(none)',
+      gapMessage: 'No Month uploads yet — Author Dashboard → Upload KDP Sales Report (Month)',
+      hasGap: true,
+      gaps: []
+    };
+  }
+
+  const startKey = keys[0];
+  const expected = enumerateYearMonths_(startKey, currentKey);
+  const have = new Set(keys);
+  const gaps = expected.filter(m => !have.has(m));
+  const pastGaps = gaps.filter(m => m < currentKey);
+  const missingCurrent = gaps.indexOf(currentKey) >= 0;
+
+  const parts = [];
+  if (pastGaps.length) {
+    parts.push('Missing: ' + pastGaps.map(formatYearMonthLabel_).join(', '));
+  }
+  if (missingCurrent) {
+    parts.push('Current month (' + formatYearMonthLabel_(currentKey) + ') not uploaded yet');
+  }
+
+  return {
+    monthsOnFile: keys.map(formatYearMonthLabel_).join(', '),
+    gapMessage: parts.length ? parts.join(' · ') : 'OK — no gaps through ' + formatYearMonthLabel_(currentKey),
+    hasGap: parts.length > 0,
+    gaps: gaps
+  };
+}
+
+function enumerateYearMonths_(startKey, endKey) {
+  const out = [];
+  const sm = String(startKey || '').match(/^(\d{4})-(\d{2})$/);
+  const em = String(endKey || '').match(/^(\d{4})-(\d{2})$/);
+  if (!sm || !em) return out;
+  let y = Number(sm[1]);
+  let m = Number(sm[2]);
+  const ey = Number(em[1]);
+  const emon = Number(em[2]);
+  let guard = 0;
+  while ((y < ey || (y === ey && m <= emon)) && guard < 240) {
+    out.push(y + '-' + (m < 10 ? '0' : '') + m);
+    m++;
+    if (m > 12) {
+      m = 1;
+      y++;
+    }
+    guard++;
+  }
+  return out;
+}
+
+function formatYearMonthLabel_(key) {
+  const m = String(key || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) return String(key || '');
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const idx = Number(m[2]) - 1;
+  return (months[idx] || m[2]) + ' ' + m[1];
+}
+
+/**
+ * Date-range KDP exports for the current week:
+ * undo the previous same-week upload contribution, then apply this file’s amounts.
+ * So multiple uploads in one week replace (wipe prior week delta), they do not stack.
+ */
+function applyKdpWeekReplaceToManualEntry_(totals, meta, summary) {
+  summary = summary || {};
+  summary.appliedAsWeekReplace = true;
+  summary.appliedAsAddition = true; // keep summary flag for older UI text paths
+  summary.blockedPartial = false;
+
+  const anchor = (meta && (meta.maxSalesDate || meta.maxDate)) || getSpreadsheetToday_();
+  const weekKey = dateKey_(getWeekEndingDate_(anchor));
+  const fingerprint = kdpPartialFingerprint_(totals, meta);
+  const props = PropertiesService.getDocumentProperties();
+  const lastFp = String(props.getProperty('AD_KDP_LAST_PARTIAL_FP') || '');
+  if (fingerprint && fingerprint === lastFp) {
+    summary.skippedDuplicatePartial = true;
+    summary.partialReasons = (meta.reasons || []).concat([
+      'Identical report already applied for this week — skipped.'
+    ]);
+    return summary;
+  }
+
+  const sh = getRequiredSheet_(AD.SHEETS.INPUT);
+  if (sh.getLastRow() < 2) return summary;
+
+  const weekAdds = readKdpWeekPartialAdds_();
+  const prevWeek = weekAdds[weekKey] || {};
+  const nextWeek = {};
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, AD.INPUT_HEADERS.length).getValues();
+  const matchedKeys = new Set();
+  const today = getSpreadsheetToday_();
+
+  rows.forEach((r, i) => {
+    if (normalizeKey_(r[AD.COL.STORE]) !== 'amazon') return;
+    const listing = clean_(r[AD.COL.LISTING_ID]);
+    const keys = listingIdentifierKeys_(r);
+    if (!keys.length || !listing) return;
+
+    let hit = null;
+    let hitKey = '';
+    for (let k = 0; k < keys.length; k++) {
+      if (totals[keys[k]]) {
+        hit = totals[keys[k]];
+        hitKey = keys[k];
+        break;
+      }
+    }
+    if (!hit) return;
+    matchedKeys.add(hitKey);
+
+    const rowNum = i + 2;
+    const newU = number_(hit.units);
+    const newK = number_(hit.kenp);
+    const newEbook = number_(hit.royaltyEbook);
+    const newPrint = number_(hit.royaltyPrint);
+    const newKenpR = Math.round(number_(hit.royaltyKenp) * 100) / 100;
+    const prev = prevWeek[listing] || { u: 0, k: 0, e: 0, p: 0, kr: 0 };
+
+    // lifetime - previous same-week contribution + this report’s contribution
+    const nextU = Math.max(0, number_(r[AD.COL.UNITS]) - number_(prev.u) + newU);
+    const nextK = Math.max(0, number_(r[AD.COL.KU]) - number_(prev.k) + newK);
+    const nextEbook = Math.round((number_(r[AD.COL.ROYALTY_EBOOK]) - number_(prev.e) + newEbook) * 100) / 100;
+    const nextPrint = Math.round((number_(r[AD.COL.ROYALTY_PRINT]) - number_(prev.p) + newPrint) * 100) / 100;
+    const nextKenpR = Math.round((number_(r[AD.COL.ROYALTY_KENP]) - number_(prev.kr) + newKenpR) * 100) / 100;
+    const nextTotal = Math.round((Math.max(0, nextEbook) + Math.max(0, nextPrint) + Math.max(0, nextKenpR)) * 100) / 100;
+
+    sh.getRange(rowNum, AD.COL.UNITS + 1).setValue(nextU);
+    sh.getRange(rowNum, AD.COL.KU + 1).setValue(nextK);
+    sh.getRange(rowNum, AD.COL.ROYALTY_EBOOK + 1).setValue(Math.max(0, nextEbook));
+    sh.getRange(rowNum, AD.COL.ROYALTY_PRINT + 1).setValue(Math.max(0, nextPrint));
+    sh.getRange(rowNum, AD.COL.ROYALTY_KENP + 1).setValue(Math.max(0, nextKenpR));
+    sh.getRange(rowNum, AD.COL.ROYALTIES + 1).setValue(nextTotal);
+
+    nextWeek[listing] = { u: newU, k: newK, e: newEbook, p: newPrint, kr: newKenpR };
+
+    summary.listingsUpdated++;
+    summary.fieldsWritten++;
+    summary.unitsSet += newU;
+    summary.kuSet += newK;
+    summary.royaltiesSet += Math.round((newEbook + newPrint + newKenpR) * 100) / 100;
+    summary.ebookRoyaltiesSet += newEbook;
+    summary.printRoyaltiesSet += newPrint;
+    summary.kenpRoyaltiesSet += newKenpR;
+
+    sh.getRange(rowNum, AD.COL.LAST_DATA_DATE + 1).setValue(
+      meta && meta.maxDate ? meta.maxDate : today
+    );
+    const rangeNote = meta && meta.minDate && meta.maxDate
+      ? ' KDP period ' + dateKey_(meta.minDate) + ' → ' + dateKey_(meta.maxDate) + '.'
+      : '';
+    sh.getRange(rowNum, AD.COL.PROCESS_STATUS + 1).setValue(
+      'KDP week REPLACE applied (week ending ' + weekKey + ').' + rangeNote +
+        ' This week: ' + newU + ' units, ' + newK + ' KENP, $' +
+        (Math.round((newEbook + newPrint + newKenpR) * 100) / 100).toFixed(2) + '.'
+    );
+  });
+
+  Object.keys(totals).forEach(id => {
+    if (!matchedKeys.has(id)) {
+      const already = [...matchedKeys].some(k => totals[k] === totals[id]);
+      if (already) return;
+      summary.listingsUnmatched++;
+      summary.unmatchedIds.push(id);
+    }
+  });
+
+  if (summary.listingsUpdated > 0) {
+    weekAdds[weekKey] = nextWeek;
+    props.setProperty('AD_KDP_WEEK_PARTIAL_ADDS', JSON.stringify(weekAdds));
+    if (fingerprint) props.setProperty('AD_KDP_LAST_PARTIAL_FP', fingerprint);
+    summary.snapshotWeekEnding = weekKey;
+  }
+  return summary;
+}
+
+function readKdpWeekPartialAdds_() {
+  try {
+    const raw = PropertiesService.getDocumentProperties().getProperty('AD_KDP_WEEK_PARTIAL_ADDS');
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function kdpPartialFingerprint_(totals, meta) {
+  let units = 0;
+  let kenp = 0;
+  let roy = 0;
+  const seen = new Set();
+  Object.keys(totals || {}).forEach(k => {
+    const t = totals[k];
+    if (!t || seen.has(t)) return;
+    seen.add(t);
+    units += number_(t.units);
+    kenp += number_(t.kenp);
+    roy += number_(t.royaltyEbook) + number_(t.royaltyPrint) + number_(t.royaltyKenp);
+  });
+  return [
+    meta && meta.minDate ? dateKey_(meta.minDate) : '',
+    meta && meta.maxDate ? dateKey_(meta.maxDate) : '',
+    units,
+    kenp,
+    Math.round(roy * 100)
+  ].join('|');
 }
 
 function buildKdpTotalsFromRows_(found) {
@@ -638,7 +1063,10 @@ function kenpSheetHasRoyaltyColumn_(kenpRows) {
   return rows.some(row => keys.some(k => row[k] != null && row[k] !== ''));
 }
 
-/** Lifetime Royalties (USD) = eBook + Print + KENP for every listing row. */
+/**
+ * Lifetime Royalties (USD) = eBook + Print + KENP when split columns are populated.
+ * Does not replace a unit-only total with KENP-alone (0+0+k).
+ */
 function recomputeLifetimeRoyaltiesFromSplits_() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AD.SHEETS.INPUT);
   if (!sh || sh.getLastRow() < 2) return;
@@ -648,8 +1076,8 @@ function recomputeLifetimeRoyaltiesFromSplits_() {
     const e = number_(r[AD.COL.ROYALTY_EBOOK]);
     const p = number_(r[AD.COL.ROYALTY_PRINT]);
     const k = number_(r[AD.COL.ROYALTY_KENP]);
-    if (!(e || p || k || number_(r[AD.COL.ROYALTIES]))) return;
-    const total = e + p + k;
+    if (!(e || p)) return; // syncEstimatedKenpRoyaltiesFromRate_ handles KENP-only updates
+    const total = Math.round((e + p + k) * 100) / 100;
     if (Math.abs(total - number_(r[AD.COL.ROYALTIES])) > 0.009) {
       sh.getRange(i + 2, AD.COL.ROYALTIES + 1).setValue(total);
     }
@@ -697,16 +1125,36 @@ function formatKdpImportSummary_(summary) {
   lines.push('KDP sales upload' + (summary.fileName ? ' (' + summary.fileName + ')' : '') + '.');
   lines.push('');
 
-  if (summary.blockedPartial) {
-    lines.push('⚠ BLOCKED — report looks PARTIAL. Lifetime totals were NOT overwritten.');
+  if (summary.skippedDuplicatePartial) {
+    lines.push('⚠ Identical short-range report already applied — skipped.');
     (summary.partialReasons || []).forEach(r => lines.push('• ' + r));
     lines.push('');
-    lines.push('Download a KDP Dashboard report covering the full life of each book (All time / lifetime), then upload again.');
-    lines.push('Partial-period reports must not replace Lifetime Units / KENP / Royalties.');
+    lines.push('Download Month again when you want a full refresh.');
     return lines.join('\n');
   }
 
   const meta = summary.reportMeta || {};
+  if (summary.appliedAsMonthContrib || meta.isMonthReport) {
+    lines.push(
+      'Month report (' + (summary.monthKey || '?') +
+        ') — that month’s slice was stored; lifetime = sum of all uploaded months.'
+    );
+    if (summary.monthsStored && summary.monthsStored.length) {
+      lines.push('Months on file: ' + summary.monthsStored.join(', '));
+    }
+    lines.push(
+      'Re-upload an older month anytime to replace only that month. ' +
+        'If you skip a month, upload it when you can — until then lifetime omits it.'
+    );
+    lines.push('');
+  } else if (summary.appliedAsWeekReplace || summary.appliedAsAddition) {
+    lines.push(
+      'Today/Yesterday report — this week’s contribution was REPLACED with this file.'
+    );
+    (summary.partialReasons || []).forEach(r => lines.push('• ' + r));
+    lines.push('Tip: for your usual habit, download Month — it just updates lifetime + Sales History.');
+    lines.push('');
+  }
   if (meta.minDate || meta.maxDate) {
     lines.push('Report dates (all): ' + (meta.minDate || '?') + ' → ' + (meta.maxDate || '?'));
   }

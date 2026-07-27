@@ -24,9 +24,11 @@ const AD = {
   AMAZON_READER_FALLBACK_PREFIX: 'https://r.jina.ai/https://www.amazon.com/dp/',
   ACTIVE_LISTING_STATUSES: ['live', 'in review'],
   KDP_REPORTS_URL: 'https://kdp.amazon.com/en_US/reports-new',
-  // Saturday night close = Sunday 00:00 Mountain (America/Boise).
+  // Daily automated refresh (Mountain / America/Boise).
+  DAILY_TRIGGER_HOUR: 5,
+  // Legacy names kept so older menu/scripts still resolve.
   WEEKLY_TRIGGER_WEEKDAY: ScriptApp.WeekDay.SUNDAY,
-  WEEKLY_TRIGGER_HOUR: 0,
+  WEEKLY_TRIGGER_HOUR: 5,
   KDP_SHEETS: {
     COMBINED: 'Combined Sales',
     EBOOK: 'eBook Royalty',
@@ -42,6 +44,7 @@ const AD = {
     INPUT: 'Manual Entry',
     DASHBOARD: 'Dashboard',
     VISUAL: 'Visual Dashboard',
+    VISUAL_DATA: '_Visual Chart Data',
     CATALOG: 'Catalog Summary',
     SALES: 'Sales History',
     RANKS: 'Rank History',

@@ -1,8 +1,10 @@
 # Meta Marketing API sync
 
-Pull **daily** ad insights locally, then upload the CSV into the Author Dashboard.
+**Preferred:** store the token once via Apps Script `configureMetaApiCredentials`, then **Refresh Everything** pulls insights from the Graph API.
 
-Secrets stay in a local `.env` — never in the Google Sheet or git.
+**Optional fallback:** pull daily ad insights locally to CSV, then run `uploadMetaInsightsCsv` from Apps Script.
+
+Local secrets stay in `.env` — never commit tokens. Sheet credentials use Document Properties (not cells).
 
 ## Setup
 

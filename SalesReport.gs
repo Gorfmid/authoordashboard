@@ -425,10 +425,11 @@ function rebuildYearOverYearSheet_() {
     sh,
     2,
     width,
-    'Book totals below sum “Since Prev Snapshot” values by Week Ending year. ' +
-      'They are NOT lifetime totals. Lifetime lives on Manual Entry / Sales History Lifetime columns. ' +
-      'KENP chart: one line per calendar year (e.g. 2026 vs 2027) by week number.',
-    { background: '#FFF8E7', fontSize: 10, rowHeight: 48 }
+    'Period Units / Royalties for a year = change in lifetime from the last snapshot before that year ' +
+      'to the latest snapshot in that year (per listing, then summed by book). ' +
+      'This includes sales already present on the first snapshot (which stores period change = 0). ' +
+      'KENP overlay below still uses week-of-year for multi-year lines.',
+    { background: '#FFF8E7', fontSize: 10, rowHeight: 54 }
   );
 
   if (!years.length) {
@@ -503,8 +504,36 @@ function rebuildYearOverYearSheet_() {
 }
 
 /**
+ * Week-ending date × calendar year matrix of period KENP (for Visual Dashboard).
+ * X-axis is the actual Week Ending date (not week-of-year number).
+ */
+function buildKenpByWeekEnding_(years) {
+  const matrix = {};
+  const weekDates = {};
+  if (!years || !years.length) return { weeks: [], weekDates: weekDates, matrix: matrix };
+
+  years.forEach(y => {
+    const pivot = buildSalesPivotForYear_(y, 'periodKenp');
+    pivot.weeks.forEach(weekKey => {
+      const d = pivot.weekDates[weekKey];
+      if (!d) return;
+      weekDates[weekKey] = d;
+      if (!matrix[weekKey]) matrix[weekKey] = {};
+      let sum = 0;
+      pivot.bookTitles.forEach(t => {
+        sum += (pivot.matrix[weekKey] && pivot.matrix[weekKey][t]) || 0;
+      });
+      matrix[weekKey][y] = sum;
+    });
+  });
+
+  const weeks = Object.keys(weekDates).sort();
+  return { weeks: weeks, weekDates: weekDates, matrix: matrix };
+}
+
+/**
  * Week-of-year × calendar year matrix of period KENP (book-level week-over-week).
- * Enables 2026 vs 2027 as separate chart lines when both years exist.
+ * Enables 2026 vs 2027 as separate chart lines when both years exist (YoY sheet).
  */
 function buildKenpByYearOverlay_(years) {
   const matrix = {};
@@ -536,26 +565,54 @@ function buildKenpByYearOverlay_(years) {
   return { weeks: weeks, matrix: matrix };
 }
 
+/**
+ * YoY period totals from lifetime endpoints (not sum of “Since Prev Snapshot”).
+ * First snapshots store period change = 0, so summing period columns undercounts
+ * lifetime already present on the first row (e.g. 32 units → showed 24).
+ *
+ * Per listing, per year Y:
+ *   baseline = lifetime on latest snapshot with Week Ending year < Y (else 0)
+ *   end = lifetime on latest snapshot with Week Ending year === Y
+ *   period = max(0, end − baseline)
+ * Then sum listings by book title.
+ */
 function buildYearOverYearTotals_(years) {
-  const sales = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AD.SHEETS.SALES);
   const byBook = {};
   const titleSet = new Set();
-  if (!sales || sales.getLastRow() < 2) {
+  if (!years || !years.length) {
     return { titles: getBookTitleOrder_(), byBook: byBook };
   }
 
-  sales.getRange(2, 1, sales.getLastRow() - 1, AD.SALES_HEADERS.length).getValues().forEach(r => {
-    if (!isValidDate_(r[1])) return;
-    const week = new Date(r[1]);
-    const y = Number(Utilities.formatDate(week, AD.TZ, 'yyyy'));
-    if (years.indexOf(y) === -1) return;
-    const title = clean_(r[4]) || clean_(r[2]) || 'Unknown';
+  const byListing = getSalesLifetimeSeriesByListingForYoy_();
+  byListing.forEach(series => {
+    if (!series.length) return;
+    const title = series[0].title;
     titleSet.add(title);
     if (!byBook[title]) byBook[title] = {};
-    if (!byBook[title][y]) byBook[title][y] = { units: 0, royalties: 0 };
-    byBook[title][y].units += number_(r[9]);
-    byBook[title][y].royalties += number_(r[13]);
+
+    years.forEach(y => {
+      let baselineU = 0;
+      let baselineR = 0;
+      let endU = null;
+      let endR = null;
+      series.forEach(s => {
+        if (s.year < y) {
+          baselineU = s.units;
+          baselineR = s.royalties;
+        } else if (s.year === y) {
+          endU = s.units;
+          endR = s.royalties;
+        }
+      });
+      if (endU == null && endR == null) return;
+      if (!byBook[title][y]) byBook[title][y] = { units: 0, royalties: 0 };
+      byBook[title][y].units += Math.max(0, number_(endU) - number_(baselineU));
+      byBook[title][y].royalties += Math.max(0, number_(endR) - number_(baselineR));
+    });
   });
+
+  // Include catalog books with no history yet
+  getBookTitleOrder_().forEach(t => titleSet.add(t));
 
   const ordered = [];
   const used = new Set();
@@ -570,6 +627,40 @@ function buildYearOverYearTotals_(years) {
   });
 
   return { titles: ordered, byBook: byBook };
+}
+
+/**
+ * One series per listing: latest snapshot per Week Ending, sorted by week.
+ * Points: { week, year, units, royalties, title }
+ */
+function getSalesLifetimeSeriesByListingForYoy_() {
+  const map = new Map(); // listing -> Map(weekKey -> point)
+  const sales = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AD.SHEETS.SALES);
+  if (!sales || sales.getLastRow() < 2) return [];
+
+  sales.getRange(2, 1, sales.getLastRow() - 1, AD.SALES_HEADERS.length).getValues().forEach(r => {
+    if (!isValidDate_(r[1]) || !clean_(r[3])) return;
+    const listing = clean_(r[3]);
+    const week = startOfDay_(new Date(r[1]));
+    const weekKey = dateKey_(week);
+    const snap = isValidDate_(r[0]) ? new Date(r[0]).getTime() : 0;
+    const point = {
+      week: week,
+      year: Number(Utilities.formatDate(week, AD.TZ, 'yyyy')),
+      units: number_(r[8]),
+      royalties: number_(r[12]),
+      title: clean_(r[4]) || clean_(r[2]) || 'Unknown',
+      snap: snap
+    };
+    if (!map.has(listing)) map.set(listing, new Map());
+    const weeks = map.get(listing);
+    const prev = weeks.get(weekKey);
+    if (!prev || snap >= prev.snap) weeks.set(weekKey, point);
+  });
+
+  return [...map.values()].map(weekMap =>
+    [...weekMap.values()].sort((a, b) => a.week - b.week)
+  );
 }
 
 function getAutomaticSheetNames_() {

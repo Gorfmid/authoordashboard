@@ -79,8 +79,12 @@ function applyEstimatedKenpRoyaltiesToTotals_(totals) {
   return { applied: kenpRoyalties > 0, rate: rate, kenpRoyalties: kenpRoyalties };
 }
 
-/** Write Manual Entry Lifetime KENP Royalties = KU pages × rate; refresh totals. */
+/**
+ * Estimated KENP $ = KU pages × rate. Writes Lifetime KENP Royalties and
+ * Lifetime Royalties (unit splits + KENP, or prior unit total + KENP).
+ */
 function syncEstimatedKenpRoyaltiesFromRate_() {
+  ensureInputKuRoyaltySchema_();
   const rate = getEstimatedKenpRoyaltyRate_();
   if (!(rate > 0)) return false;
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AD.SHEETS.INPUT);
@@ -91,16 +95,23 @@ function syncEstimatedKenpRoyaltiesFromRate_() {
     if (normalizeKey_(r[AD.COL.STORE]) !== 'amazon') return;
     const pages = number_(r[AD.COL.KU]);
     if (!(pages > 0)) return;
-    const next = Math.round(pages * rate * 100) / 100;
-    if (Math.abs(next - number_(r[AD.COL.ROYALTY_KENP])) > 0.009) {
-      sh.getRange(i + 2, AD.COL.ROYALTY_KENP + 1).setValue(next);
-      wrote = true;
-    } else if (r[AD.COL.ROYALTY_KENP] === '' || r[AD.COL.ROYALTY_KENP] == null) {
-      sh.getRange(i + 2, AD.COL.ROYALTY_KENP + 1).setValue(next);
+    const nextK = Math.round(pages * rate * 100) / 100;
+    const e = number_(r[AD.COL.ROYALTY_EBOOK]);
+    const p = number_(r[AD.COL.ROYALTY_PRINT]);
+    const prevK = number_(r[AD.COL.ROYALTY_KENP]);
+    let unitPart = e + p;
+    if (unitPart <= 0) {
+      // Splits never filled — keep unit $ already in Lifetime Royalties, strip old KENP estimate
+      unitPart = Math.max(0, number_(r[AD.COL.ROYALTIES]) - prevK);
+    }
+    const nextTotal = Math.round((unitPart + nextK) * 100) / 100;
+    const rowNum = i + 2;
+    if (Math.abs(nextK - prevK) > 0.009 || Math.abs(nextTotal - number_(r[AD.COL.ROYALTIES])) > 0.009) {
+      sh.getRange(rowNum, AD.COL.ROYALTY_KENP + 1).setValue(nextK);
+      sh.getRange(rowNum, AD.COL.ROYALTIES + 1).setValue(nextTotal);
       wrote = true;
     }
   });
-  if (wrote) recomputeLifetimeRoyaltiesFromSplits_();
   return wrote;
 }
 

@@ -1,9 +1,14 @@
 /**
- * Meta Marketing insights — import only (no secrets in the workbook).
- * Pull data locally with meta/sync_meta_insights.py + .env, then upload the CSV here.
+ * Meta Marketing insights.
+ * Preferred: Refresh Everything pulls from the Meta Graph API when credentials
+ * are stored in Document Properties (not sheet cells). CSV upload remains a fallback.
  *
  * Do NOT label Amazon orders as Meta conversions. Spend/clicks are ad metrics only.
  */
+
+var AD_META_PROP_TOKEN = 'AD_META_ACCESS_TOKEN';
+var AD_META_PROP_ACCOUNT = 'AD_META_AD_ACCOUNT_ID';
+var AD_META_PROP_VERSION = 'AD_META_API_VERSION';
 
 function uploadMetaInsightsCsv() {
   const html = HtmlService.createHtmlOutputFromFile('MetaUpload')
@@ -13,34 +18,279 @@ function uploadMetaInsightsCsv() {
 }
 
 /**
+ * One-time setup: store Meta token + ad account in Document Properties, then sync.
+ * Menu: Author Dashboard → Connect Meta Ads…
+ * Same values as local .env META_ACCESS_TOKEN / META_AD_ACCOUNT_ID.
+ */
+function configureMetaApiCredentials() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getDocumentProperties();
+  const existing = getMetaApiConfig_();
+  if (existing.token && existing.accountId) {
+    const again = ui.alert(
+      'Meta already connected',
+      'Account: ' + existing.accountId + '\n\nReplace credentials?',
+      ui.ButtonSet.YES_NO
+    );
+    if (again !== ui.Button.YES) {
+      // Re-sync with existing credentials.
+      try {
+        const summary = syncMetaInsightsFromApi_({ quiet: false, refreshDashboard: true, lockSheets: true });
+        ui.alert(formatMetaImportSummary_(summary));
+      } catch (e) {
+        ui.alert('Meta sync failed', e && e.message ? e.message : String(e), ui.ButtonSet.OK);
+      }
+      return;
+    }
+  }
+
+  const tokenRes = ui.prompt(
+    'Meta access token',
+    'Paste your long-lived Marketing API token (same as META_ACCESS_TOKEN in .env).\nStored in Document Properties — not written to sheet cells.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (tokenRes.getSelectedButton() !== ui.Button.OK) return;
+  const token = String(tokenRes.getResponseText() || '').trim();
+  if (!token) {
+    ui.alert('Token required.');
+    return;
+  }
+
+  const acctRes = ui.prompt(
+    'Meta ad account ID',
+    'Ad account id (same as META_AD_ACCOUNT_ID, e.g. act_1234567890):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (acctRes.getSelectedButton() !== ui.Button.OK) return;
+  let account = String(acctRes.getResponseText() || '').trim();
+  if (!account) {
+    ui.alert('Ad account ID required.');
+    return;
+  }
+  if (!/^act_/i.test(account)) account = 'act_' + account;
+
+  props.setProperty(AD_META_PROP_TOKEN, token);
+  props.setProperty(AD_META_PROP_ACCOUNT, account);
+  if (!props.getProperty(AD_META_PROP_VERSION)) {
+    props.setProperty(AD_META_PROP_VERSION, 'v21.0');
+  }
+
+  try {
+    const summary = syncMetaInsightsFromApi_({ quiet: false, refreshDashboard: true, lockSheets: true });
+    ui.alert(
+      'Meta connected and synced.\n\n' + formatMetaImportSummary_(summary) +
+        '\n\nRefresh Everything will keep Meta Daily updated.'
+    );
+  } catch (e) {
+    ui.alert(
+      'Credentials saved, but sync failed',
+      (e && e.message ? e.message : String(e)) +
+        '\n\nCheck the token/account, then use Connect Meta Ads… again (or Refresh Everything).',
+      ui.ButtonSet.OK
+    );
+  }
+}
+
+function getMetaApiConfig_() {
+  const props = PropertiesService.getDocumentProperties();
+  return {
+    token: String(props.getProperty(AD_META_PROP_TOKEN) || '').trim(),
+    accountId: String(props.getProperty(AD_META_PROP_ACCOUNT) || '').trim(),
+    apiVersion: String(props.getProperty(AD_META_PROP_VERSION) || 'v21.0').trim() || 'v21.0'
+  };
+}
+
+function hasMetaApiCredentials_() {
+  const cfg = getMetaApiConfig_();
+  return !!(cfg.token && cfg.accountId);
+}
+
+/**
+ * Pull Meta insights via Graph API and upsert Meta Daily.
+ * @param {{quiet?: boolean}=} opts quiet=true skips when credentials missing (for Refresh Everything).
+ * @returns {Object} summary or { skipped: true, reason }
+ */
+function syncMetaInsightsFromApi_(opts) {
+  opts = opts || {};
+  const cfg = getMetaApiConfig_();
+  if (!cfg.token || !cfg.accountId) {
+    if (opts.quiet) return { skipped: true, reason: 'no credentials' };
+    throw new Error(
+      'Meta API credentials not set. Run configureMetaApiCredentials() from Apps Script once.'
+    );
+  }
+
+  const end = getSpreadsheetToday_();
+  const start = new Date(end.getTime());
+  start.setDate(start.getDate() - 30);
+  const dateStart = Utilities.formatDate(start, AD.TZ, 'yyyy-MM-dd');
+  const dateEnd = Utilities.formatDate(end, AD.TZ, 'yyyy-MM-dd');
+
+  const insightRows = fetchMetaInsightsFromApi_(cfg, dateStart, dateEnd);
+  const csvRows = metaInsightsToImportRows_(insightRows);
+  return applyMetaInsightRows_(csvRows, {
+    fileName: 'Meta API ' + dateStart + '→' + dateEnd,
+    refreshDashboard: opts.refreshDashboard !== false,
+    lockSheets: opts.lockSheets !== false
+  });
+}
+
+/** Menu / script entry: sync Meta now (shows alert). */
+function syncMetaInsightsFromApi() {
+  const summary = syncMetaInsightsFromApi_({ quiet: false, refreshDashboard: true, lockSheets: true });
+  SpreadsheetApp.getUi().alert(formatMetaImportSummary_(summary));
+}
+
+/**
  * payload = { fileName, rows: [ {Date, Campaign ID, ...}, ... ] }
  */
 function processMetaInsightsUpload(payload) {
+  if (!payload || !payload.rows || !payload.rows.length) {
+    throw new Error('No Meta insight rows received.');
+  }
+  const summary = applyMetaInsightRows_(payload.rows, {
+    fileName: payload.fileName || '',
+    refreshDashboard: true,
+    lockSheets: true
+  });
+  return formatMetaImportSummary_(summary);
+}
+
+function applyMetaInsightRows_(rows, opts) {
+  opts = opts || {};
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(30000)) throw new Error('Workbook is busy. Try again in a moment.');
 
   try {
-    if (!payload || !payload.rows || !payload.rows.length) {
-      throw new Error('No Meta insight rows received.');
-    }
     ensureMetaSheets_();
     const batchId = 'META-' + Utilities.formatDate(new Date(), AD.TZ, 'yyyyMMdd-HHmmss');
     const importedAt = new Date();
-    const summary = upsertMetaDailyRows_(payload.rows, {
+    const summary = upsertMetaDailyRows_(rows, {
       batchId: batchId,
-      fileName: payload.fileName || '',
+      fileName: opts.fileName || '',
       importedAt: importedAt
     });
     appendMetaSyncLog_(summary);
     setMetaSyncHealth_(summary);
     syncMetaCampaignMarketingRows_();
     syncAutoEvents_();
-    refreshDashboard_();
-    lockAutomaticSheets();
-    return formatMetaImportSummary_(summary);
+    if (opts.refreshDashboard !== false) refreshDashboard_();
+    if (opts.lockSheets !== false) lockAutomaticSheets();
+    return summary;
   } finally {
     lock.releaseLock();
   }
+}
+
+function fetchMetaInsightsFromApi_(cfg, dateStart, dateEnd) {
+  const account = /^act_/i.test(cfg.accountId) ? cfg.accountId : 'act_' + cfg.accountId;
+  const fields = [
+    'campaign_id', 'campaign_name',
+    'adset_id', 'adset_name',
+    'ad_id', 'ad_name',
+    'spend', 'impressions', 'clicks', 'reach', 'ctr', 'cpc', 'cpm',
+    'actions', 'date_start', 'date_stop'
+  ].join(',');
+
+  const params = {
+    access_token: cfg.token,
+    level: 'ad',
+    time_increment: '1',
+    limit: '100',
+    fields: fields,
+    time_range: JSON.stringify({ since: dateStart, until: dateEnd })
+  };
+  const qs = Object.keys(params)
+    .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
+    .join('&');
+  let nextUrl = 'https://graph.facebook.com/' + cfg.apiVersion + '/' + account + '/insights?' + qs;
+
+  const rows = [];
+  let pages = 0;
+  while (nextUrl && pages < 40) {
+    pages++;
+    const data = metaApiGetJson_(nextUrl);
+    const chunk = data.data || [];
+    if (Array.isArray(chunk)) {
+      chunk.forEach(r => rows.push(r));
+    }
+    nextUrl = (data.paging && data.paging.next) || null;
+    if (nextUrl) Utilities.sleep(250);
+  }
+  return rows;
+}
+
+function metaApiGetJson_(url) {
+  let delayMs = 2000;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const resp = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      followRedirects: true
+    });
+    const code = resp.getResponseCode();
+    let data = {};
+    try {
+      data = JSON.parse(resp.getContentText() || '{}');
+    } catch (e) {
+      data = {};
+    }
+    if (code === 200 && !data.error) return data;
+
+    const err = data.error || {};
+    const errCode = err.code;
+    const msg = err.message || ('HTTP ' + code);
+
+    if (errCode === 190 || errCode === 102 || code === 401) {
+      throw new Error('Meta token error (' + errCode + '): ' + msg + '. Run configureMetaApiCredentials().');
+    }
+    if (code === 429 || code >= 500 || errCode === 4 || errCode === 17 || errCode === 32 || errCode === 613) {
+      lastErr = new Error(msg);
+      Utilities.sleep(delayMs);
+      delayMs = Math.min(delayMs * 2, 30000);
+      continue;
+    }
+    throw new Error('Meta API error: ' + msg);
+  }
+  throw new Error('Meta API failed after retries: ' + (lastErr && lastErr.message ? lastErr.message : 'unknown'));
+}
+
+function metaActionValue_(actions, actionType) {
+  if (!Array.isArray(actions)) return 0;
+  for (let i = 0; i < actions.length; i++) {
+    const item = actions[i];
+    if (item && item.action_type === actionType) return number_(item.value);
+  }
+  return 0;
+}
+
+function metaInsightsToImportRows_(insights) {
+  return (insights || []).map(row => {
+    const actions = row.actions || [];
+    let linkClicks = metaActionValue_(actions, 'link_click');
+    if (linkClicks <= 0) linkClicks = metaActionValue_(actions, 'outbound_click');
+    const lpv = metaActionValue_(actions, 'landing_page_view');
+    return {
+      Date: row.date_start || '',
+      'Campaign ID': asTextId_(row.campaign_id),
+      'Campaign Name': String(row.campaign_name || ''),
+      'Ad Set ID': asTextId_(row.adset_id),
+      'Ad Set Name': String(row.adset_name || ''),
+      'Ad ID': asTextId_(row.ad_id),
+      'Ad Name': String(row.ad_name || ''),
+      Spend: row.spend != null ? row.spend : 0,
+      Impressions: row.impressions != null ? row.impressions : 0,
+      'Clicks (all)': row.clicks != null ? row.clicks : 0,
+      'Link Clicks': linkClicks,
+      'Landing Page Views': lpv,
+      Reach: row.reach != null ? row.reach : 0,
+      CTR: row.ctr != null ? row.ctr : '',
+      CPC: row.cpc != null ? row.cpc : '',
+      CPM: row.cpm != null ? row.cpm : '',
+      'Action Types (JSON)': JSON.stringify(actions),
+      'Book ID': ''
+    };
+  });
 }
 
 function ensureMetaSheets_() {

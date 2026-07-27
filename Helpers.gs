@@ -84,7 +84,8 @@ function getDiagnosticSheetNames_(){
   return [
     AD.SHEETS.RECONCILE,
     AD.SHEETS.META_SYNC,
-    AD.SHEETS.ROYALTY_PERIODS
+    AD.SHEETS.ROYALTY_PERIODS,
+    AD.SHEETS.VISUAL_DATA
   ];
 }
 

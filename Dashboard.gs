@@ -67,13 +67,31 @@ function refreshDashboard_() {
     );
   } else {
     metrics.push('');
-    metrics.push('No Meta sync yet — run meta/sync_meta_insights.py then Upload Meta Insights CSV');
+    metrics.push(
+      hasMetaApiCredentials_()
+        ? 'No Meta sync yet — Refresh Everything to pull insights'
+        : 'No Meta sync — run configureMetaApiCredentials() once, then Refresh Everything'
+    );
   }
+
+  const kdpMonths = getKdpMonthGapStatus_();
+  metrics.push(kdpMonths.monthsOnFile || '(none)');
+  metrics.push(kdpMonths.gapMessage || '');
 
   dash.getRange(4, 2, metrics.length, 1).setValues(metrics.map(x => [x]));
 
+  // Highlight KDP gap reminder when months are missing.
+  const gapRow = 3 + metrics.length; // last metrics row (1-based sheet row)
+  try {
+    const gapCell = dash.getRange(gapRow, 1, 1, 2);
+    if (kdpMonths.hasGap) {
+      gapCell.setBackground('#FFF3CD').setFontColor('#7A5B00');
+    } else {
+      gapCell.setBackground(null).setFontColor(null);
+    }
+  } catch (e) {}
+
   // Catalog Performance starts at column F (leave D–E as spacer).
-  // Columns: Book | Stage | Units | KENP | Royalties | Best Rank
   clearBlockUnmerged_(dash, 3, 4, 200, 10);
   mergeRowSafe_(dash, 3, 6, 6)
     .setValue('Catalog Performance')
@@ -99,16 +117,17 @@ function refreshDashboard_() {
   dash.getRange('B15:B16').setNumberFormat('#,##0');
   dash.getRange('B17').setNumberFormat('m/d/yyyy');
   dash.getRange('B20').setNumberFormat('m/d/yyyy hh:mm:ss');
+  // KDP month rows are text (B22 / B23 after Meta rows).
   dash.getRange('H5:I').setNumberFormat('#,##0');
   dash.getRange('J5:J').setNumberFormat('$#,##0.00');
   dash.getRange('K5:K').setNumberFormat('#,##0');
 
   const metricsEndRow = 3 + metrics.length;
-  const kuEndRow = writeKuEstimatesBlock_(dash, metricsEndRow + 2);
   const catalogEndRow = perf.length ? (4 + perf.length) : 4;
-  const categoryStartRow = Math.max(kuEndRow, catalogEndRow) + 2;
+  const categoryStartRow = Math.max(metricsEndRow, catalogEndRow) + 2;
 
-  clearBlockUnmerged_(dash, Math.max(kuEndRow + 1, 22), 1, 250, 5);
+  // Clear space below metrics (no KU Estimates block).
+  clearBlockUnmerged_(dash, metricsEndRow + 1, 1, 250, 5);
 
   // Remove any leftover charts from the numbers Dashboard (charts live on Visual Dashboard).
   dash.getCharts().forEach(c => {
@@ -139,14 +158,15 @@ function ensureDashboardLayout_(sheet) {
     'Top-Ranked Book',
     'Rank Trend (lower is better)',
     'Last Meta Sync',
-    'Meta Sync Status'
+    'Meta Sync Status',
+    'KDP Months on File',
+    'KDP Month Gaps'
   ];
   const current = sheet.getRange(4, 1, labels.length, 1).getValues().map(r => clean_(r[0]));
   const needs = labels.some((label, i) => normalizeKey_(current[i] || '') !== normalizeKey_(label));
   if (needs) {
     sheet.getRange(4, 1, labels.length, 1).setValues(labels.map(x => [x]));
   }
-  // Title spans through Catalog Performance (column K).
   try {
     sheet.getRange('A1:K1').getMergedRanges().forEach(m => {
       try { m.breakApart(); } catch (e) {}
@@ -160,99 +180,6 @@ function ensureDashboardLayout_(sheet) {
   [225, 220, 30, 40, 40, 220, 110, 90, 100, 110, 100].forEach((w, i) => {
     if (sheet.getColumnWidth(i + 1) < w) sheet.setColumnWidth(i + 1, w);
   });
-}
-
-/**
- * KU Estimates block from latest Royalty Periods row + portfolio KENPC rules.
- * Returns last row written.
- */
-function writeKuEstimatesBlock_(dash, startRow) {
-  const period = getLatestRoyaltyPeriod_();
-  const kenpcInfo = getPortfolioKenpcForCalc_();
-  const note =
-    'Calculated from estimated KENP royalties divided by KENP read for the selected reporting period. ' +
-    'The final KDP Select payout rate may change when Amazon finalizes the month.';
-
-  mergeRowSafe_(dash, startRow, 1, 3)
-    .setValue('KU Estimates')
-    .setFontWeight('bold')
-    .setHorizontalAlignment('center')
-    .setBackground('#1f4e78')
-    .setFontColor('#ffffff');
-
-  let rate = null;
-  let totalKenp = 0;
-  let kenpRoy = 0;
-  let ebook = 0;
-  let print = 0;
-  let total = 0;
-  let periodLabel = '';
-  if (period) {
-    totalKenp = number_(period.totalKenp);
-    kenpRoy = number_(period.kenpRoyalties);
-    ebook = number_(period.ebookRoyalties);
-    print = number_(period.printRoyalties);
-    total = number_(period.totalRoyalties);
-    if (period.ratePerKenp !== '' && period.ratePerKenp != null) rate = number_(period.ratePerKenp);
-    else if (totalKenp > 0 && kenpRoy > 0) rate = kenpRoy / totalKenp;
-    const s = isValidDate_(period.periodStart) ? dateKey_(startOfDay_(new Date(period.periodStart))) : '';
-    const e = isValidDate_(period.periodEnd) ? dateKey_(startOfDay_(new Date(period.periodEnd))) : '';
-    periodLabel = (s && e) ? (s + ' → ' + e) : (e || s || '');
-  }
-
-  const useKenpc = kenpcInfo.useForPortfolio;
-  const kenpc = useKenpc ? kenpcInfo.kenpc : null;
-  const fullRead = (useKenpc && rate != null) ? kenpc * rate : null;
-  const equiv = (useKenpc && totalKenp > 0) ? totalKenp / kenpc : null;
-  const mixE = total > 0 ? ebook / total : null;
-  const mixP = total > 0 ? print / total : null;
-  const mixK = total > 0 ? kenpRoy / total : null;
-  const cents = rate != null ? rate * 100 : null;
-
-  const rows = [
-    ['Reporting Period', periodLabel || '(upload a KDP report)'],
-    ['Estimated KENP Royalty Rate', rate != null ? rate : ''],
-    ['(cents per KENP)', cents != null ? cents : ''],
-    ['KU Royalty per 1,000 Pages', rate != null ? rate * 1000 : ''],
-    ['Estimated Full KU Read Royalty', fullRead != null ? fullRead : ''],
-    ['KU Equivalent Reads', equiv != null ? equiv : ''],
-    ['Royalty Mix — eBook', mixE != null ? mixE : ''],
-    ['Royalty Mix — Print', mixP != null ? mixP : ''],
-    ['Royalty Mix — KENP', mixK != null ? mixK : ''],
-    ['Period eBook / Print / KENP $', total > 0
-      ? ('$' + ebook.toFixed(2) + ' / $' + print.toFixed(2) + ' / $' + kenpRoy.toFixed(2))
-      : ''],
-    ['Royalty Estimate Status', period ? (period.status || 'estimated') : '']
-  ];
-
-  const bodyStart = startRow + 1;
-  dash.getRange(bodyStart, 1, rows.length, 2).setValues(rows);
-  dash.getRange(bodyStart, 1, rows.length, 1).setFontWeight('bold');
-
-  dash.getRange(bodyStart + 1, 2).setNumberFormat('$#,##0.00000');
-  dash.getRange(bodyStart + 2, 2).setNumberFormat('0.000" cents"');
-  dash.getRange(bodyStart + 3, 2).setNumberFormat('$#,##0.00');
-  dash.getRange(bodyStart + 4, 2).setNumberFormat('$#,##0.00');
-  dash.getRange(bodyStart + 5, 2).setNumberFormat('0.00');
-  dash.getRange(bodyStart + 6, 2, bodyStart + 8, 2).setNumberFormat('0.00%');
-
-  const noteRow = bodyStart + rows.length;
-  dash.getRange(noteRow, 1, 1, 3).merge()
-    .setValue(note)
-    .setFontSize(9)
-    .setFontColor('#555555')
-    .setWrap(true)
-    .setBackground('#FFF8E7');
-  dash.setRowHeight(noteRow, 48);
-  dash.getRange(bodyStart + 1, 1).setNote(note);
-
-  if (!useKenpc) {
-    dash.getRange(bodyStart + 4, 2).setNote(
-      'Enter KENPC on Manual Entry for exactly one published book to populate full-read and equivalent-read portfolio metrics.'
-    );
-  }
-
-  return noteRow;
 }
 
 function refreshCategoryRankTable_(dash, startRow) {
@@ -320,48 +247,101 @@ function ensureVisualDashboard_() {
   return sh;
 }
 
+/** Hidden sheet that holds chart source ranges (never shown on Visual Dashboard). */
+function ensureVisualDataSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(AD.SHEETS.VISUAL_DATA);
+  if (!sh) sh = ss.insertSheet(AD.SHEETS.VISUAL_DATA);
+  try { sh.hideSheet(); } catch (e) {}
+  return sh;
+}
+
 /**
- * Charts-only sheet, tab order: immediately after Dashboard.
- * Rank chart uses a readable "rank score" (higher = better) plus a real-rank table.
+ * Charts-only sheet. Source data lives on a hidden sheet so nothing leaks into view.
+ * Layout: 2 charts per row with spaced anchors.
  */
 function refreshVisualDashboard_() {
   const sh = ensureVisualDashboard_();
+  const dataSh = ensureVisualDataSheet_();
   prepareSheetForRebuild_(sh);
+  prepareSheetForRebuild_(dataSh);
   sh.clear();
+  dataSh.clear();
   sh.getCharts().forEach(c => {
     try { sh.removeChart(c); } catch (e) {}
   });
 
-  styleReportTitleRow_(sh, 'Visual Dashboard — ranks, orders, KENP', 8);
-  setBannerRow_(
-    sh,
-    2,
-    8,
-    'Charts only. Numbers / Catalog Performance live on Dashboard. ' +
-      'Rank chart uses Rank Score = (max rank in view − Amazon rank). Higher score = better. ' +
-      'Real Amazon ranks are in the table on the right.',
-    { background: '#FFF8E7', fontSize: 10, rowHeight: 48 }
-  );
+  // Light canvas — paint the full grid so scrolling right isn’t white.
+  const bg = '#f4f6f8';
+  const ink = '#1f4e78';
+  const maxC = sh.getMaxColumns();
+  const maxR = sh.getMaxRows();
+  sh.setHiddenGridlines(true);
+  try { sh.setTabColor('#1f4e78'); } catch (e) {}
+  for (let c = 1; c <= Math.min(maxC, 40); c++) sh.setColumnWidth(c, 72);
+  sh.setRowHeight(1, 48);
+  sh.getRange(1, 1, maxR, maxC)
+    .clearContent()
+    .clearNote()
+    .setBackground(bg)
+    .setFontColor(ink);
+  sh.getRange(1, 1, 1, maxC)
+    .setBackground('#1f4e78')
+    .setFontColor('#ffffff');
+  sh.getRange(1, 1)
+    .setValue('Visual Dashboard')
+    .setFontWeight('bold')
+    .setFontSize(22)
+    .setFontColor('#ffffff')
+    .setBackground('#1f4e78')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+
+  const layout = {
+    chartW: 540,
+    chartH: 330,
+    leftCol: 1,
+    rightCol: 12,
+    row1: 3,
+    row2: 24,
+    dataRow: 1,
+    rankScoreCol: 1,
+    ordersCol: 1,
+    kenpCol: 1,
+    bg: bg,
+    ink: ink
+  };
 
   const seriesByFormat = getOverallRankSeriesByFormat_();
-  writeVisualRankSection_(sh, seriesByFormat);
-  writeVisualSalesCharts_(sh);
+  writeVisualRankChart_(sh, dataSh, seriesByFormat, layout);
+  writeVisualSalesCharts_(sh, dataSh, layout);
+  try { dataSh.hideSheet(); } catch (e) {}
 }
 
-function writeVisualRankSection_(sh, data) {
-  const tableCol = 1; // A — real ranks (readable)
-  const scoreCol = 10; // J — score data for chart (hidden)
-  const dataStartRow = 4;
+/** Light chart theme — matches the rest of the workbook. */
+function applyVisualChartTheme_(builder, layout) {
+  const axis = {
+    titleTextStyle: { color: '#5a6a7a', fontSize: 11 },
+    textStyle: { color: '#3d4a57', fontSize: 10 },
+    gridlines: { color: '#e2e8ee' },
+    baselineColor: '#c5ced6'
+  };
+  return builder
+    .setOption('width', layout.chartW)
+    .setOption('height', layout.chartH)
+    .setOption('backgroundColor', { fill: '#ffffff', stroke: '#d8dee6', strokeWidth: 1 })
+    .setOption('chartArea', { left: '12%', top: '16%', width: '78%', height: '62%', backgroundColor: '#ffffff' })
+    .setOption('titleTextStyle', { color: layout.ink || '#1f4e78', fontSize: 14, bold: true })
+    .setOption('legend', { position: 'bottom', textStyle: { color: '#3d4a57', fontSize: 11 } })
+    .setOption('hAxis', axis)
+    .setOption('vAxis', axis);
+}
 
-  sh.getRange(dataStartRow, tableCol, 1, 4).setValues([[
-    'Snapshot Date',
-    'eBook Rank',
-    'Paperback Rank',
-    'Hardcover Rank'
-  ]]);
-  styleHeader_(sh.getRange(dataStartRow, tableCol, 1, 4));
+/** Rank-score series on hidden data sheet + chart (top-left). */
+function writeVisualRankChart_(sh, dataSh, data, layout) {
+  const scoreCol = 1;
+  const dataStartRow = 1;
 
-  // Build score: higher = better. ceiling = max observed rank across series.
   let maxRank = 0;
   (data.dates || []).forEach((_, i) => {
     ['ebook', 'paperback', 'hardcover'].forEach(fmt => {
@@ -375,78 +355,60 @@ function writeVisualRankSection_(sh, data) {
     return n > 0 ? (ceiling - n) : '';
   };
 
-  sh.getRange(dataStartRow, scoreCol, 1, 4).setValues([[
+  dataSh.getRange(dataStartRow, scoreCol, 1, 4).setValues([[
     'Snapshot Date',
     'eBook Score',
     'Paperback Score',
     'Hardcover Score'
   ]]);
 
-  if (data.dates && data.dates.length) {
-    const actual = data.dates.map((d, i) => [
-      d,
-      data.series.ebook[i] === '' || data.series.ebook[i] == null ? '' : number_(data.series.ebook[i]),
-      data.series.paperback[i] === '' || data.series.paperback[i] == null ? '' : number_(data.series.paperback[i]),
-      data.series.hardcover[i] === '' || data.series.hardcover[i] == null ? '' : number_(data.series.hardcover[i])
-    ]);
-    const scores = data.dates.map((d, i) => [
-      d,
-      toScore(data.series.ebook[i]),
-      toScore(data.series.paperback[i]),
-      toScore(data.series.hardcover[i])
-    ]);
-    sh.getRange(dataStartRow + 1, tableCol, actual.length, 4).setValues(actual);
-    sh.getRange(dataStartRow + 1, tableCol, actual.length, 1).setNumberFormat('m/d/yyyy');
-    sh.getRange(dataStartRow + 1, tableCol + 1, actual.length, 3).setNumberFormat('#,##0');
-    sh.getRange(dataStartRow + 1, scoreCol, scores.length, 4).setValues(scores);
-    sh.getRange(dataStartRow + 1, scoreCol, scores.length, 1).setNumberFormat('m/d/yyyy');
-    sh.getRange(dataStartRow + 1, scoreCol + 1, scores.length, 3).setNumberFormat('#,##0');
-  }
+  if (!data.dates || !data.dates.length) return;
 
-  try { sh.hideColumns(scoreCol, 4); } catch (e) {}
+  const scores = data.dates.map((d, i) => [
+    d,
+    toScore(data.series.ebook[i]),
+    toScore(data.series.paperback[i]),
+    toScore(data.series.hardcover[i])
+  ]);
+  dataSh.getRange(dataStartRow + 1, scoreCol, scores.length, 4).setValues(scores);
+  dataSh.getRange(dataStartRow + 1, scoreCol, scores.length, 1).setNumberFormat('m/d/yyyy');
+  dataSh.getRange(dataStartRow + 1, scoreCol + 1, scores.length, 3).setNumberFormat('#,##0');
 
-  sh.getRange(dataStartRow, 6).setValue('← Real Amazon ranks (lower # = better)')
-    .setFontStyle('italic').setFontColor('#555555');
+  if (data.dates.length < 2) return;
 
-  if (!data.dates || data.dates.length < 2) return;
-
-  const dataRange = sh.getRange(dataStartRow, scoreCol, data.dates.length + 1, 4);
-  const chart = sh.newChart()
+  const dataRange = dataSh.getRange(dataStartRow, scoreCol, data.dates.length + 1, 4);
+  let builder = sh.newChart()
     .asLineChart()
     .addRange(dataRange)
-    .setTitle('Overall rank trend — higher score = better (improving moves up)')
+    .setTitle('Overall rank trend')
     .setXAxisTitle('Snapshot Date')
-    .setYAxisTitle('Rank score (higher = better)')
+    .setYAxisTitle('Rank score')
     .setNumHeaders(1)
     .setLegendPosition(Charts.Position.BOTTOM)
     .setOption('curveType', 'function')
     .setOption('pointSize', 5)
-    .setOption('width', 780)
-    .setOption('height', 340)
-    .setOption('vAxes', { 0: { title: 'Rank score (higher = better)', format: '#,##0' } })
-    .setPosition(4, 6, 0, 0)
-    .build();
-  sh.insertChart(chart);
+    .setOption('vAxes', { 0: { title: 'Rank score', format: '#,##0' } })
+    .setPosition(layout.row1, layout.leftCol, 0, 0);
+  builder = applyVisualChartTheme_(builder, layout);
+  sh.insertChart(builder.build());
 }
 
-function writeVisualSalesCharts_(sh) {
+/** Orders (top-right) + KENP (bottom-left); source data on hidden sheet. */
+function writeVisualSalesCharts_(sh, dataSh, layout) {
   const year = Number(Utilities.formatDate(getSpreadsheetToday_(), AD.TZ, 'yyyy'));
   const orders = buildSalesPivotForYear_(year, 'periodUnits');
   const kenpYears = getSalesYearsFromHistory_();
   const years = kenpYears.length ? kenpYears : [year];
-  const kenpOverlay = buildKenpByYearOverlay_(years);
+  const kenpByDate = buildKenpByWeekEnding_(years);
 
-  const ordersCol = 20;
-  const kenpCol = 34;
-  const ordersDataRow = 4;
-  const kenpDataRow = 4;
-
-  clearBlockUnmerged_(sh, ordersDataRow, ordersCol, 120, 12);
-  clearBlockUnmerged_(sh, kenpDataRow, kenpCol, 80, 8);
+  // Rank block used cols A–D on data sheet; orders at col 6; KENP at col 20.
+  const ordersCol = 6;
+  const kenpCol = 20;
+  const dataRow = 1;
 
   const orderHeaders = ['Week Ending'].concat(orders.bookTitles);
   const orderWidth = Math.max(2, orderHeaders.length);
-  sh.getRange(ordersDataRow, ordersCol, 1, orderWidth).setValues([
+  dataSh.getRange(dataRow, ordersCol, 1, orderWidth).setValues([
     orderHeaders.length > 1 ? orderHeaders : ['Week Ending', 'Orders']
   ]);
 
@@ -457,71 +419,66 @@ function writeVisualSalesCharts_(sh) {
       orders.bookTitles.forEach(t => row.push((orders.matrix[wk] && orders.matrix[wk][t]) || 0));
       return row;
     });
-    sh.getRange(ordersDataRow + 1, ordersCol, body.length, orderWidth).setValues(body);
-    sh.getRange(ordersDataRow + 1, ordersCol, body.length, 1).setNumberFormat('m/d/yyyy');
+    dataSh.getRange(dataRow + 1, ordersCol, body.length, orderWidth).setValues(body);
+    dataSh.getRange(dataRow + 1, ordersCol, body.length, 1).setNumberFormat('m/d/yyyy');
     if (orderWidth > 1) {
-      sh.getRange(ordersDataRow + 1, ordersCol + 1, body.length, orderWidth - 1).setNumberFormat('#,##0');
+      dataSh.getRange(dataRow + 1, ordersCol + 1, body.length, orderWidth - 1).setNumberFormat('#,##0');
     }
     orderRows = body.length;
   }
 
-  const kenpHeaders = ['Week of Year'].concat(years.map(y => String(y) + ' KENP'));
+  const kenpHeaders = ['Week Ending'].concat(years.map(y => String(y) + ' KENP'));
   const kenpWidth = Math.max(2, kenpHeaders.length);
-  sh.getRange(kenpDataRow, kenpCol, 1, kenpWidth).setValues([kenpHeaders]);
+  dataSh.getRange(dataRow, kenpCol, 1, kenpWidth).setValues([kenpHeaders]);
 
   let kenpRows = 0;
-  if (kenpOverlay.weeks.length) {
-    const body = kenpOverlay.weeks.map(wk => {
-      const row = [wk];
-      years.forEach(y => row.push((kenpOverlay.matrix[wk] && kenpOverlay.matrix[wk][y]) || 0));
+  if (kenpByDate.weeks.length) {
+    const body = kenpByDate.weeks.map(wk => {
+      const row = [kenpByDate.weekDates[wk]];
+      years.forEach(y => {
+        const v = kenpByDate.matrix[wk] && kenpByDate.matrix[wk][y];
+        row.push(v == null || v === '' ? '' : v);
+      });
       return row;
     });
-    sh.getRange(kenpDataRow + 1, kenpCol, body.length, kenpWidth).setValues(body);
+    dataSh.getRange(dataRow + 1, kenpCol, body.length, kenpWidth).setValues(body);
+    dataSh.getRange(dataRow + 1, kenpCol, body.length, 1).setNumberFormat('m/d/yyyy');
     if (kenpWidth > 1) {
-      sh.getRange(kenpDataRow + 1, kenpCol + 1, body.length, kenpWidth - 1).setNumberFormat('#,##0');
+      dataSh.getRange(dataRow + 1, kenpCol + 1, body.length, kenpWidth - 1).setNumberFormat('#,##0');
     }
     kenpRows = body.length;
   }
 
-  try { sh.hideColumns(ordersCol, 12); } catch (e) {}
-  try { sh.hideColumns(kenpCol, 8); } catch (e) {}
-
   if (orderRows >= 1 && orders.bookTitles.length) {
-    const ordersRange = sh.getRange(ordersDataRow, ordersCol, orderRows + 1, orderWidth);
-    sh.insertChart(
-      sh.newChart()
-        .asColumnChart()
-        .addRange(ordersRange)
-        .setStacked()
-        .setTitle('Orders by week — ' + year)
-        .setXAxisTitle('Week Ending')
-        .setYAxisTitle('Orders (units)')
-        .setNumHeaders(1)
-        .setLegendPosition(Charts.Position.BOTTOM)
-        .setOption('width', 780)
-        .setOption('height', 300)
-        .setPosition(24, 1, 0, 0)
-        .build()
-    );
+    const ordersRange = dataSh.getRange(dataRow, ordersCol, orderRows + 1, orderWidth);
+    let builder = sh.newChart()
+      .asColumnChart()
+      .addRange(ordersRange)
+      .setStacked()
+      .setTitle('Orders by week — ' + year)
+      .setXAxisTitle('Week Ending')
+      .setYAxisTitle('Orders (units)')
+      .setNumHeaders(1)
+      .setLegendPosition(Charts.Position.BOTTOM)
+      .setPosition(layout.row1, layout.rightCol, 0, 0);
+    builder = applyVisualChartTheme_(builder, layout);
+    sh.insertChart(builder.build());
   }
 
   if (kenpRows >= 1) {
-    const kenpRange = sh.getRange(kenpDataRow, kenpCol, kenpRows + 1, kenpWidth);
-    sh.insertChart(
-      sh.newChart()
-        .asLineChart()
-        .addRange(kenpRange)
-        .setTitle('KENP read by week of year' + (years.length > 1 ? ' (line per year)' : ''))
-        .setXAxisTitle('Week of year')
-        .setYAxisTitle('KENP read')
-        .setNumHeaders(1)
-        .setLegendPosition(Charts.Position.BOTTOM)
-        .setOption('curveType', 'function')
-        .setOption('pointSize', 4)
-        .setOption('width', 780)
-        .setOption('height', 300)
-        .setPosition(42, 1, 0, 0)
-        .build()
-    );
+    const kenpRange = dataSh.getRange(dataRow, kenpCol, kenpRows + 1, kenpWidth);
+    let builder = sh.newChart()
+      .asLineChart()
+      .addRange(kenpRange)
+      .setTitle('KENP read by week ending' + (years.length > 1 ? ' (by year)' : ''))
+      .setXAxisTitle('Week Ending')
+      .setYAxisTitle('KENP read')
+      .setNumHeaders(1)
+      .setLegendPosition(Charts.Position.BOTTOM)
+      .setOption('curveType', 'function')
+      .setOption('pointSize', 5)
+      .setPosition(layout.row2, layout.leftCol, 0, 0);
+    builder = applyVisualChartTheme_(builder, layout);
+    sh.insertChart(builder.build());
   }
 }

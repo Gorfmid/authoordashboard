@@ -1,72 +1,133 @@
-function installWeeklyTrigger() {
-  removeWeeklyTrigger();
-  ScriptApp.newTrigger('scheduledWeeklyUpdate')
-    .timeBased()
-    .onWeekDay(AD.WEEKLY_TRIGGER_WEEKDAY)
-    .atHour(AD.WEEKLY_TRIGGER_HOUR)
-    .inTimezone(AD.TZ)
-    .create();
+/** Menu: install both daily sales + rank jobs at once. */
+function installDailyJobs() {
+  installDailyTrigger_(false);
+  installDailyRankTrigger_(false);
   SpreadsheetApp.getUi().alert(
-    'Weekly sales snapshot installed for Saturday night midnight Mountain time ' +
-      '(Sunday 12:00 AM ' + AD.TZ + '). Week ending is Saturday.'
+    'Daily jobs installed for ' + AD.DAILY_TRIGGER_HOUR + ':00 AM ' + AD.TZ +
+      '.\n\n• Sales / dashboard refresh\n• Amazon rank update'
   );
 }
 
-function removeWeeklyTrigger() {
+/** Menu: remove both daily jobs. */
+function removeDailyJobs() {
+  removeDailyTrigger();
+  removeDailyRankTrigger();
+  SpreadsheetApp.getUi().alert('Daily sales and rank jobs removed.');
+}
+
+function installDailyTrigger() {
+  installDailyTrigger_(true);
+}
+
+function installDailyTrigger_(showAlert) {
+  removeDailyTrigger();
+  ScriptApp.newTrigger('scheduledDailyUpdate')
+    .timeBased()
+    .everyDays(1)
+    .atHour(AD.DAILY_TRIGGER_HOUR)
+    .inTimezone(AD.TZ)
+    .create();
+  if (showAlert !== false) {
+    SpreadsheetApp.getUi().alert(
+      'Daily update installed for ' + AD.DAILY_TRIGGER_HOUR + ':00 AM ' + AD.TZ +
+        '.\n\nSales History upserts the current week-ending Saturday row.'
+    );
+  }
+}
+
+function removeDailyTrigger() {
+  const handlers = [
+    'scheduledDailyUpdate',
+    'scheduledWeeklyUpdate' // legacy weekly handler
+  ];
   ScriptApp.getProjectTriggers().forEach(t => {
-    if (t.getHandlerFunction() === 'scheduledWeeklyUpdate') ScriptApp.deleteTrigger(t);
+    if (handlers.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
 }
 
-function scheduledWeeklyUpdate() {
+function scheduledDailyUpdate() {
   assignInternalIds_();
   createStoreUrls_();
   recordCurrentSnapshotSilent_();
+  try {
+    syncMetaInsightsFromApi_({ quiet: true, refreshDashboard: false, lockSheets: false });
+  } catch (metaErr) {
+    console.error('Meta API sync (daily job): ' + (metaErr && metaErr.message ? metaErr.message : metaErr));
+  }
+  syncMetaCampaignMarketingRows_();
+  syncAutoEvents_();
   processMarketingEntries_(false);
   refreshSalesReports_();
   rebuildCatalogSummary_();
   refreshDashboard_();
   rebuildReconciliationSheet_();
+  hideDiagnosticSheets_();
   lockAutomaticSheets();
 }
 
+/** Upsert Sales History for the current week ending (no daily duplicate rows). */
 function recordCurrentSnapshotSilent_() {
   ensureRankHistorySchema_();
   ensureSalesHistorySchema_();
   const rows = getInputRows_();
-  const saturday = getMostRecentWeekEndingSaturday_();
-  // Sales snapshot only — ranks are written by scheduledWeeklyRankUpdate / updateAmazonRanks_.
-  recordSalesSnapshot_(rows, saturday, saturday);
+  const today = getSpreadsheetToday_();
+  const week = getWeekEndingDate_(today);
+  recordSalesSnapshot_(rows, today, week, today, { upsertByWeek: true });
+  consolidateSalesHistoryByWeekEnding_();
+  recomputeSalesPeriodChangesFromLifetime_();
 }
 
-function installWeeklyRankTrigger() {
-  removeWeeklyRankTrigger();
-  ScriptApp.newTrigger('scheduledWeeklyRankUpdate')
+function installDailyRankTrigger() {
+  installDailyRankTrigger_(true);
+}
+
+function installDailyRankTrigger_(showAlert) {
+  removeDailyRankTrigger();
+  ScriptApp.newTrigger('scheduledDailyRankUpdate')
     .timeBased()
-    .onWeekDay(AD.WEEKLY_TRIGGER_WEEKDAY)
-    .atHour(AD.WEEKLY_TRIGGER_HOUR)
+    .everyDays(1)
+    .atHour(AD.DAILY_TRIGGER_HOUR)
     .inTimezone(AD.TZ)
     .create();
-  SpreadsheetApp.getUi().alert(
-    'Weekly Amazon rank update installed for Saturday night midnight Mountain time ' +
-      '(Sunday 12:00 AM ' + AD.TZ + '). Week ending is Saturday.'
-  );
+  if (showAlert !== false) {
+    SpreadsheetApp.getUi().alert(
+      'Daily Amazon rank update installed for ' + AD.DAILY_TRIGGER_HOUR + ':00 AM ' + AD.TZ + '.'
+    );
+  }
 }
 
-function removeWeeklyRankTrigger() {
+function removeDailyRankTrigger() {
+  const handlers = [
+    'scheduledDailyRankUpdate',
+    'scheduledWeeklyRankUpdate' // legacy
+  ];
   ScriptApp.getProjectTriggers().forEach(t => {
-    if (t.getHandlerFunction() === 'scheduledWeeklyRankUpdate') ScriptApp.deleteTrigger(t);
+    if (handlers.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
 }
 
-function removeWeeklyRankTriggerUi() {
-  removeWeeklyRankTrigger();
-  SpreadsheetApp.getUi().alert('Weekly Amazon rank update removed.');
+function removeDailyRankTriggerUi() {
+  removeDailyRankTrigger();
+  SpreadsheetApp.getUi().alert('Daily Amazon rank update removed.');
 }
 
-function scheduledWeeklyRankUpdate() {
-  updateAmazonRanks_(false, getMostRecentWeekEndingSaturday_());
+function scheduledDailyRankUpdate() {
+  updateAmazonRanks_(false, getSpreadsheetToday_());
 }
+
+// --- Legacy menu entry points (redirect to daily) ---
+function installWeeklyTrigger() { installDailyTrigger(); }
+function removeWeeklyTrigger() {
+  removeDailyTrigger();
+  try {
+    SpreadsheetApp.getUi().alert('Daily / weekly sales update trigger removed.');
+  } catch (e) {}
+}
+function installWeeklyRankTrigger() { installDailyRankTrigger(); }
+function removeWeeklyRankTrigger() { removeDailyRankTrigger(); }
+function removeWeeklyRankTriggerUi() { removeDailyRankTriggerUi(); }
+function scheduledWeeklyUpdate() { scheduledDailyUpdate(); }
+function scheduledWeeklyRankUpdate() { scheduledDailyRankUpdate(); }
 
 function getEffectiveTimezone_() {
   try {

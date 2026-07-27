@@ -1,29 +1,8 @@
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Author Dashboard')
-    .addItem('Initialize — ERASE AND REBUILD', 'initializeDashboard')
-    .addSeparator()
     .addItem('Refresh Everything', 'refreshEverything')
-    .addItem('Record Current Snapshot', 'recordCurrentSnapshot')
-    .addItem('Update Amazon Rankings Now', 'updateAmazonRanks')
     .addItem('Upload KDP Sales Report', 'uploadKdpSalesReport')
-    .addItem('Open KDP Reports Page', 'openKdpReportsPage')
-    .addItem('Upload Meta Insights CSV', 'uploadMetaInsightsCsv')
-    .addItem('Process Marketing Entries', 'processMarketingEntries')
-    .addItem('Add Event', 'addEventDialog')
-    .addItem('Add Standard Amazon Formats', 'addStandardAmazonFormats')
-    .addSeparator()
-    .addItem('Migrate Sales History (Phase 0)', 'migrateSalesHistoryPhase0')
-    .addItem('Migrate Stable Book IDs (SOL-001…)', 'migrateStableBookIdsMenu')
-    .addItem('Run Reconciliation', 'runSalesReconciliationMenu')
-    .addItem('Run Phase 0 Tests', 'runPhase0Tests')
-    .addSeparator()
-    .addItem('Install Weekly Saturday Night Update', 'installWeeklyTrigger')
-    .addItem('Remove Weekly Update', 'removeWeeklyTrigger')
-    .addItem('Install Weekly Saturday Night Rank Update', 'installWeeklyRankTrigger')
-    .addItem('Remove Weekly Rank Update', 'removeWeeklyRankTriggerUi')
-    .addSeparator()
-    .addItem('Unlock Automatic Sheets', 'unlockAutomaticSheets')
-    .addItem('Relock Automatic Sheets', 'lockAutomaticSheets')
+    .addItem('Connect Meta Ads…', 'configureMetaApiCredentials')
     .addToUi();
 }
 
@@ -43,8 +22,8 @@ function initializeDashboard() {
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   try { ss.setSpreadsheetTimeZone(AD.TZ); } catch (e) {}
-  removeWeeklyTrigger();
-  removeWeeklyRankTrigger();
+  removeDailyTrigger();
+  removeDailyRankTrigger();
   removeAllProtections_();
 
   const temp = ss.insertSheet('__TEMP__' + Date.now());
@@ -92,6 +71,7 @@ function refreshEverything() {
   ensureMetaSheets_();
   cleanupManualRankSnapshots_();
   repairMissingJuly25OverallRanks_();
+  repairKenpOnlySundayWeekEndings_();
   consolidateSalesHistoryByWeekEnding_();
   recomputeSalesPeriodChangesFromLifetime_();
   ensureInputKuRoyaltySchema_();
@@ -99,6 +79,27 @@ function refreshEverything() {
   syncEstimatedKenpRoyaltiesFromRate_();
   recomputeLifetimeRoyaltiesFromSplits_();
   syncLatestRoyaltyPeriodKenpFromManual_();
+  // Pull Meta ad insights (last 30 days) when Document Properties have credentials.
+  try {
+    const metaResult = syncMetaInsightsFromApi_({ quiet: true, refreshDashboard: false, lockSheets: false });
+    if (metaResult && metaResult.skipped) {
+      SpreadsheetApp.getActiveSpreadsheet().toast(
+        'Meta skipped — Author Dashboard → Connect Meta Ads… (once)',
+        'Meta',
+        8
+      );
+    } else if (metaResult && metaResult.rowsUpserted != null) {
+      SpreadsheetApp.getActiveSpreadsheet().toast(
+        'Meta Daily updated (' + metaResult.rowsUpserted + ' rows)',
+        'Meta',
+        5
+      );
+    }
+  } catch (metaErr) {
+    const msg = metaErr && metaErr.message ? metaErr.message : String(metaErr);
+    console.error('Meta API sync during refresh: ' + msg);
+    SpreadsheetApp.getActiveSpreadsheet().toast(msg, 'Meta sync failed', 10);
+  }
   syncMetaCampaignMarketingRows_();
   syncAutoEvents_();
   refreshSalesReports_();
