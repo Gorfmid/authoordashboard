@@ -681,6 +681,7 @@ function orderReportSheets_() {
   const base = [
     AD.SHEETS.INPUT,
     AD.SHEETS.DASHBOARD,
+    AD.SHEETS.STATISTICS,
     AD.SHEETS.VISUAL,
     AD.SHEETS.CATALOG,
     AD.SHEETS.SALES,

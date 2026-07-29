@@ -189,6 +189,37 @@ function runPhase0Tests() {
     String(2314 * AD.ESTIMATED_KENP_RATE_USD)
   );
 
+  // Format-scoped split: ebook + paperback must not both receive full book royalties.
+  const hit = {
+    units: 35,
+    kenp: 3868,
+    royaltyEbook: 91.91,
+    royaltyPrint: 39.91,
+    royaltyKenp: 18.09,
+    royaltyUsd: 149.91
+  };
+  const claims = {};
+  const ebookSplit = splitKdpHitForListing_(hit, 'Kindle eBook', claims);
+  const paperSplit = splitKdpHitForListing_(hit, 'Paperback', claims);
+  const hardSplit = splitKdpHitForListing_(hit, 'Hardcover', claims);
+  const bookTotal =
+    ebookSplit.royaltyUsd + paperSplit.royaltyUsd + hardSplit.royaltyUsd;
+  pass(
+    'format split royalties ≈ KDP Summary once',
+    Math.abs(bookTotal - 149.91) < 0.02,
+    String(bookTotal)
+  );
+  pass(
+    'format split units claimed once',
+    number_(ebookSplit.units) + number_(paperSplit.units) + number_(hardSplit.units) === 35,
+    String(number_(ebookSplit.units) + number_(paperSplit.units) + number_(hardSplit.units))
+  );
+  pass(
+    'KENP pages on ebook only',
+    number_(ebookSplit.kenp) === 3868 && number_(paperSplit.kenp) === 0,
+    String(ebookSplit.kenp) + '/' + String(paperSplit.kenp)
+  );
+
   // 8) Recompute series logic
   const series = [
     { units: 32, ku: 100, roy: 10 },
@@ -248,4 +279,68 @@ function recomputePeriodSeries_(series) {
     prev = s;
     return { du: du, dk: dk, dr: dr };
   });
+}
+
+/**
+ * Temporary diagnostic — run via clasp / script editor.
+ * Returns Manual Entry royalty splits + Catalog totals + estimated KENP rate.
+ */
+function diagnoseRoyalties_() {
+  const rate = getEstimatedKenpRoyaltyRate_();
+  const listings = getInputRows_().map(r => ({
+    bookId: clean_(r[AD.COL.BOOK_ID]),
+    listingId: clean_(r[AD.COL.LISTING_ID]),
+    title: clean_(r[AD.COL.TITLE]),
+    format: clean_(r[AD.COL.FORMAT]),
+    id: clean_(r[AD.COL.IDENTIFIER]),
+    units: number_(r[AD.COL.UNITS]),
+    ku: number_(r[AD.COL.KU]),
+    total: number_(r[AD.COL.ROYALTIES]),
+    ebook: number_(r[AD.COL.ROYALTY_EBOOK]),
+    print: number_(r[AD.COL.ROYALTY_PRINT]),
+    kenp: number_(r[AD.COL.ROYALTY_KENP]),
+    sumSplits: Math.round(
+      (number_(r[AD.COL.ROYALTY_EBOOK]) +
+        number_(r[AD.COL.ROYALTY_PRINT]) +
+        number_(r[AD.COL.ROYALTY_KENP])) *
+        100
+    ) / 100
+  })).filter(x => x.title || x.units || x.total);
+
+  const cat = getRequiredSheet_(AD.SHEETS.CATALOG);
+  const catalog = cat.getLastRow() >= 2
+    ? cat.getRange(2, 1, cat.getLastRow() - 1, AD.CATALOG_HEADERS.length).getValues().map(r => ({
+      title: clean_(r[1]),
+      units: number_(r[12]),
+      ku: number_(r[13]),
+      roy: number_(r[14]),
+      ebook: number_(r[19]),
+      print: number_(r[20]),
+      kenp: number_(r[21])
+    }))
+    : [];
+
+  let period = null;
+  try {
+    period = getLatestRoyaltyPeriod_();
+  } catch (e) {}
+
+  let storedRate = '';
+  try {
+    storedRate = PropertiesService.getDocumentProperties().getProperty('estimatedKenpRoyaltyRate') || '';
+  } catch (e) {}
+
+  const out = {
+    estimatedKenpRate: rate,
+    storedKenpRate: storedRate,
+    seedRate: AD.ESTIMATED_KENP_RATE_USD,
+    expectedKenpAtSeed: Math.round(2448 * AD.ESTIMATED_KENP_RATE_USD * 100) / 100,
+    periodRate: period && period.ratePerKenp,
+    periodKenpPages: period && period.totalKenp,
+    periodKenpRoy: period && period.kenpRoyalties,
+    listings: listings,
+    catalog: catalog
+  };
+  console.log(JSON.stringify(out, null, 2));
+  return out;
 }

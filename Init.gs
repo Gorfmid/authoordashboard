@@ -51,7 +51,7 @@ function hideInternalIdColumns_(sheet) {
 
 function buildDashboardSheet_(sheet) {
   sheet.clear();
-  sheet.getRange('A1:K1').merge().setValue('Author Portfolio Dashboard')
+  sheet.getRange('A1:L1').merge().setValue('Author Portfolio Dashboard')
     .setFontSize(22).setFontWeight('bold').setHorizontalAlignment('center')
     .setBackground('#1f4e78').setFontColor('#ffffff');
   sheet.setRowHeight(1,46);
@@ -61,14 +61,14 @@ function buildDashboardSheet_(sheet) {
     'Total Books','Published Books','Books in Progress','Total Store Listings','Live Store Listings',
     'Total Published Words','Lifetime Unit Sales','Lifetime KU Pages','Lifetime Royalties (USD, est.)','Total Reviews',
     'Average Rating','Best Rank Ever','Current Rank','Latest Rank Update','Top-Ranked Book',
-    'Rank Trend (lower is better)','Last Meta Sync','Meta Sync Status'
+    'Rank Trend (lower is better)'
   ];
   sheet.getRange(4,1,labels.length,2).setValues(labels.map(x=>[x,'']));
-  sheet.getRange('F3:K3').merge().setValue('Catalog Performance').setFontWeight('bold')
+  sheet.getRange('F3:L3').merge().setValue('Catalog Performance').setFontWeight('bold')
     .setHorizontalAlignment('center').setBackground('#1f4e78').setFontColor('#ffffff');
-  sheet.getRange('F4:K4').setValues([['Book','Stage','Units','KENP Read','Royalties (USD)','Best Rank']]);
-  styleHeader_(sheet.getRange('F4:K4'));
-  [225,220,30,40,40,220,110,90,100,110,100].forEach((w,i)=>sheet.setColumnWidth(i+1,w));
+  sheet.getRange('F4:L4').setValues([['Book','Stage','Units','KENP Read','Royalties (USD)','Comments','Best Rank']]);
+  styleHeader_(sheet.getRange('F4:L4'));
+  [225,220,30,40,40,220,110,90,100,110,90,100].forEach((w,i)=>sheet.setColumnWidth(i+1,w));
 }
 
 function buildCatalogSheet_(sheet) {
@@ -111,7 +111,7 @@ function seedFirstBook_(sheet) {
 
 function orderSheets_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  [AD.SHEETS.INPUT,AD.SHEETS.DASHBOARD,AD.SHEETS.VISUAL,AD.SHEETS.CATALOG,AD.SHEETS.SALES,AD.SHEETS.RANKS,AD.SHEETS.MARKETING].forEach((name,i)=>{
+  [AD.SHEETS.INPUT,AD.SHEETS.DASHBOARD,AD.SHEETS.STATISTICS,AD.SHEETS.VISUAL,AD.SHEETS.CATALOG,AD.SHEETS.SALES,AD.SHEETS.RANKS,AD.SHEETS.MARKETING].forEach((name,i)=>{
     const sh=ss.getSheetByName(name); if(sh){ss.setActiveSheet(sh);ss.moveActiveSheet(i+1);}
   });
   orderReportSheets_();

@@ -56,6 +56,160 @@ function refreshDashboard_() {
     trend
   ];
 
+  dash.getRange(4, 2, metrics.length, 1).setValues(metrics.map(x => [x]));
+
+  // Catalog Performance starts at column F (leave D–E as spacer).
+  clearBlockUnmerged_(dash, 3, 4, 200, 10);
+  mergeRowSafe_(dash, 3, 6, 7)
+    .setValue('Catalog Performance')
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center')
+    .setBackground('#1f4e78')
+    .setFontColor('#ffffff');
+  dash.getRange(4, 6, 1, 7).setValues([[
+    'Book', 'Stage', 'Units', 'KENP Read', 'Royalties (USD)', 'Comments', 'Best Rank'
+  ]]);
+  styleHeader_(dash.getRange(4, 6, 1, 7));
+
+  // Catalog cols: 1 title, 4 stage, 12 units, 13 ku, 14 roy, 15 reviews, 11 best rank ever
+  const perf = rows
+    .map(r => [r[1], r[4], r[12], r[13], r[14], r[15], r[11]])
+    .sort((a, b) => number_(b[4]) - number_(a[4]));
+  if (perf.length) dash.getRange(5, 6, perf.length, 7).setValues(perf);
+
+  dash.getRange('B4:B11').setNumberFormat('#,##0');
+  dash.getRange('B12').setNumberFormat('$#,##0.00');
+  dash.getRange('B13').setNumberFormat('#,##0');
+  dash.getRange('B14').setNumberFormat('0.0');
+  dash.getRange('B15:B16').setNumberFormat('#,##0');
+  dash.getRange('B17').setNumberFormat('m/d/yyyy');
+  dash.getRange('H5:I').setNumberFormat('#,##0');
+  dash.getRange('J5:J').setNumberFormat('$#,##0.00');
+  dash.getRange('K5:K').setNumberFormat('#,##0');
+  dash.getRange('L5:L').setNumberFormat('#,##0');
+  if (dash.getColumnWidth(11) < 90) dash.setColumnWidth(11, 90);
+  if (dash.getColumnWidth(12) < 100) dash.setColumnWidth(12, 100);
+
+  const metricsEndRow = 3 + metrics.length;
+  const catalogEndRow = perf.length ? (4 + perf.length) : 4;
+  const categoryStartRow = Math.max(metricsEndRow, catalogEndRow) + 2;
+
+  // Clear space below metrics (drops old Meta/KDP rows that moved to Statistics).
+  clearBlockUnmerged_(dash, metricsEndRow + 1, 1, 250, 5);
+
+  // Remove any leftover charts from the numbers Dashboard (charts live on Visual Dashboard).
+  dash.getCharts().forEach(c => {
+    try { dash.removeChart(c); } catch (e) {}
+  });
+
+  refreshCategoryRankTable_(dash, categoryStartRow);
+  refreshStatistics_();
+  refreshVisualDashboard_();
+  hideDiagnosticSheets_();
+}
+
+function ensureDashboardLayout_(sheet) {
+  const labels = [
+    'Total Books',
+    'Published Books',
+    'Books in Progress',
+    'Total Store Listings',
+    'Live Store Listings',
+    'Total Published Words',
+    'Lifetime Unit Sales',
+    'Lifetime KU Pages',
+    'Lifetime Royalties (USD, est.)',
+    'Total Reviews',
+    'Average Rating',
+    'Best Rank Ever',
+    'Current Rank',
+    'Latest Rank Update',
+    'Top-Ranked Book',
+    'Rank Trend (lower is better)'
+  ];
+  const current = sheet.getRange(4, 1, labels.length, 1).getValues().map(r => clean_(r[0]));
+  const needs = labels.some((label, i) => normalizeKey_(current[i] || '') !== normalizeKey_(label));
+  if (needs) {
+    sheet.getRange(4, 1, labels.length, 1).setValues(labels.map(x => [x]));
+  }
+  try {
+    sheet.getRange('A1:L1').getMergedRanges().forEach(m => {
+      try { m.breakApart(); } catch (e) {}
+    });
+  } catch (e) {}
+  sheet.getRange('A1:L1').merge()
+    .setValue('Author Portfolio Dashboard')
+    .setFontSize(22).setFontWeight('bold').setHorizontalAlignment('center')
+    .setBackground('#1f4e78').setFontColor('#ffffff');
+  sheet.setRowHeight(1, 46);
+  [225, 220, 30, 40, 40, 220, 110, 90, 100, 110, 90, 100].forEach((w, i) => {
+    if (sheet.getColumnWidth(i + 1) < w) sheet.setColumnWidth(i + 1, w);
+  });
+}
+
+/** Create Statistics sheet if missing (locked automatic sheet for sync/health metrics). */
+function ensureStatisticsSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(AD.SHEETS.STATISTICS);
+  if (!sh) {
+    sh = ss.insertSheet(AD.SHEETS.STATISTICS);
+    buildStatisticsSheet_(sh);
+  }
+  return sh;
+}
+
+function buildStatisticsSheet_(sheet) {
+  sheet.clear();
+  sheet.getRange('A1:B1').merge()
+    .setValue('Statistics')
+    .setFontSize(22).setFontWeight('bold').setHorizontalAlignment('center')
+    .setBackground('#1f4e78').setFontColor('#ffffff');
+  sheet.setRowHeight(1, 46);
+  sheet.getRange('A3:B3').setValues([['Metric', 'Current Value']]);
+  styleHeader_(sheet.getRange('A3:B3'));
+  const labels = [
+    'Last Run',
+    'Daily Jobs',
+    'Last Meta Sync',
+    'Meta Sync Status',
+    'KDP Months on File',
+    'KDP Month Gaps'
+  ];
+  sheet.getRange(4, 1, labels.length, 2).setValues(labels.map(x => [x, '']));
+  sheet.setColumnWidth(1, 200);
+  sheet.setColumnWidth(2, 420);
+}
+
+function setLastDashboardRun_(source) {
+  PropertiesService.getDocumentProperties().setProperty('AD_LAST_RUN', JSON.stringify({
+    at: new Date().toISOString(),
+    source: source || 'refresh'
+  }));
+}
+
+function getLastDashboardRun_() {
+  try {
+    const raw = PropertiesService.getDocumentProperties().getProperty('AD_LAST_RUN');
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Sync/health metrics — separate from portfolio Dashboard; protected with other auto sheets. */
+function refreshStatistics_() {
+  const sh = ensureStatisticsSheet_();
+  ensureStatisticsLayout_(sh);
+
+  const lastRun = getLastDashboardRun_();
+  const metrics = [];
+  metrics.push(lastRun && lastRun.at ? new Date(lastRun.at) : '');
+  try {
+    metrics.push(getDailyJobsStatus_());
+  } catch (e) {
+    metrics.push('Could not read triggers');
+  }
+
   const metaHealth = getMetaSyncHealth_();
   if (metaHealth && metaHealth.at) {
     metrics.push(new Date(metaHealth.at));
@@ -78,85 +232,25 @@ function refreshDashboard_() {
   metrics.push(kdpMonths.monthsOnFile || '(none)');
   metrics.push(kdpMonths.gapMessage || '');
 
-  dash.getRange(4, 2, metrics.length, 1).setValues(metrics.map(x => [x]));
+  sh.getRange(4, 2, metrics.length, 1).setValues(metrics.map(x => [x]));
+  sh.getRange('B4').setNumberFormat('m/d/yyyy hh:mm:ss');
+  sh.getRange('B6').setNumberFormat('m/d/yyyy hh:mm:ss');
 
-  // Highlight KDP gap reminder when months are missing.
-  const gapRow = 3 + metrics.length; // last metrics row (1-based sheet row)
+  const gapRow = 3 + metrics.length;
   try {
-    const gapCell = dash.getRange(gapRow, 1, 1, 2);
+    const gapCell = sh.getRange(gapRow, 1, 1, 2);
     if (kdpMonths.hasGap) {
       gapCell.setBackground('#FFF3CD').setFontColor('#7A5B00');
     } else {
       gapCell.setBackground(null).setFontColor(null);
     }
   } catch (e) {}
-
-  // Catalog Performance starts at column F (leave D–E as spacer).
-  clearBlockUnmerged_(dash, 3, 4, 200, 10);
-  mergeRowSafe_(dash, 3, 6, 6)
-    .setValue('Catalog Performance')
-    .setFontWeight('bold')
-    .setHorizontalAlignment('center')
-    .setBackground('#1f4e78')
-    .setFontColor('#ffffff');
-  dash.getRange(4, 6, 1, 6).setValues([[
-    'Book', 'Stage', 'Units', 'KENP Read', 'Royalties (USD)', 'Best Rank'
-  ]]);
-  styleHeader_(dash.getRange(4, 6, 1, 6));
-
-  // Catalog cols: 1 title, 4 stage, 12 units, 13 ku, 14 roy, 11 best rank ever
-  const perf = rows
-    .map(r => [r[1], r[4], r[12], r[13], r[14], r[11]])
-    .sort((a, b) => number_(b[4]) - number_(a[4]));
-  if (perf.length) dash.getRange(5, 6, perf.length, 6).setValues(perf);
-
-  dash.getRange('B4:B11').setNumberFormat('#,##0');
-  dash.getRange('B12').setNumberFormat('$#,##0.00');
-  dash.getRange('B13').setNumberFormat('#,##0');
-  dash.getRange('B14').setNumberFormat('0.0');
-  dash.getRange('B15:B16').setNumberFormat('#,##0');
-  dash.getRange('B17').setNumberFormat('m/d/yyyy');
-  dash.getRange('B20').setNumberFormat('m/d/yyyy hh:mm:ss');
-  // KDP month rows are text (B22 / B23 after Meta rows).
-  dash.getRange('H5:I').setNumberFormat('#,##0');
-  dash.getRange('J5:J').setNumberFormat('$#,##0.00');
-  dash.getRange('K5:K').setNumberFormat('#,##0');
-
-  const metricsEndRow = 3 + metrics.length;
-  const catalogEndRow = perf.length ? (4 + perf.length) : 4;
-  const categoryStartRow = Math.max(metricsEndRow, catalogEndRow) + 2;
-
-  // Clear space below metrics (no KU Estimates block).
-  clearBlockUnmerged_(dash, metricsEndRow + 1, 1, 250, 5);
-
-  // Remove any leftover charts from the numbers Dashboard (charts live on Visual Dashboard).
-  dash.getCharts().forEach(c => {
-    try { dash.removeChart(c); } catch (e) {}
-  });
-
-  refreshCategoryRankTable_(dash, categoryStartRow);
-  refreshVisualDashboard_();
-  hideDiagnosticSheets_();
 }
 
-function ensureDashboardLayout_(sheet) {
+function ensureStatisticsLayout_(sheet) {
   const labels = [
-    'Total Books',
-    'Published Books',
-    'Books in Progress',
-    'Total Store Listings',
-    'Live Store Listings',
-    'Total Published Words',
-    'Lifetime Unit Sales',
-    'Lifetime KU Pages',
-    'Lifetime Royalties (USD, est.)',
-    'Total Reviews',
-    'Average Rating',
-    'Best Rank Ever',
-    'Current Rank',
-    'Latest Rank Update',
-    'Top-Ranked Book',
-    'Rank Trend (lower is better)',
+    'Last Run',
+    'Daily Jobs',
     'Last Meta Sync',
     'Meta Sync Status',
     'KDP Months on File',
@@ -168,18 +262,19 @@ function ensureDashboardLayout_(sheet) {
     sheet.getRange(4, 1, labels.length, 1).setValues(labels.map(x => [x]));
   }
   try {
-    sheet.getRange('A1:K1').getMergedRanges().forEach(m => {
+    sheet.getRange('A1:B1').getMergedRanges().forEach(m => {
       try { m.breakApart(); } catch (e) {}
     });
   } catch (e) {}
-  sheet.getRange('A1:K1').merge()
-    .setValue('Author Portfolio Dashboard')
+  sheet.getRange('A1:B1').merge()
+    .setValue('Statistics')
     .setFontSize(22).setFontWeight('bold').setHorizontalAlignment('center')
     .setBackground('#1f4e78').setFontColor('#ffffff');
   sheet.setRowHeight(1, 46);
-  [225, 220, 30, 40, 40, 220, 110, 90, 100, 110, 100].forEach((w, i) => {
-    if (sheet.getColumnWidth(i + 1) < w) sheet.setColumnWidth(i + 1, w);
-  });
+  sheet.getRange('A3:B3').setValues([['Metric', 'Current Value']]);
+  styleHeader_(sheet.getRange('A3:B3'));
+  if (sheet.getColumnWidth(1) < 200) sheet.setColumnWidth(1, 200);
+  if (sheet.getColumnWidth(2) < 420) sheet.setColumnWidth(2, 420);
 }
 
 function refreshCategoryRankTable_(dash, startRow) {

@@ -1,6 +1,6 @@
 function updateAmazonRanks() {
   const summary = updateAmazonRanks_(true);
-  SpreadsheetApp.getUi().alert(formatRankUpdateSummary_(summary));
+  uiAlert_(formatRankUpdateSummary_(summary));
 }
 
 function updateAmazonRanks_(showUi, asOfDate) {

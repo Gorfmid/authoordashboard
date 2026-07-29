@@ -24,6 +24,19 @@ function normalizeKey_(v){return clean_(v).toLowerCase();}
 function number_(v){if(typeof v==='number')return isFinite(v)?v:0;const n=Number(clean_(v).replace(/[^0-9.-]/g,''));return isFinite(n)?n:0;}
 function average_(a){return a.length?a.reduce((s,x)=>s+x,0)/a.length:0;}
 function isValidDate_(v){return !isNaN(new Date(v).getTime());}
+/**
+ * Alert only when a real UI session exists (menu / dialog).
+ * Time-driven triggers have no UI — calling getUi() there fails the whole job.
+ */
+function uiAlert_(message, title) {
+  try {
+    const ui = SpreadsheetApp.getUi();
+    if (title) ui.alert(String(title), String(message || ''), ui.ButtonSet.OK);
+    else ui.alert(String(message || ''));
+  } catch (e) {
+    console.log('uiAlert_ skipped (no UI): ' + String(message || ''));
+  }
+}
 function startOfDay_(d){const x=new Date(d);x.setHours(0,0,0,0);return x;}
 /** Upcoming or current Saturday (week ends Saturday night). */
 function getWeekEndingDate_(d){const x=startOfDay_(d);x.setDate(x.getDate()+((6-x.getDay()+7)%7));return x;}

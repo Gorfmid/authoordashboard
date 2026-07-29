@@ -48,18 +48,25 @@ function rebuildCatalogSummary_() {
     if ((b.kenpc === '' || b.kenpc == null) && kenpcVal !== '' && kenpcVal != null && number_(kenpcVal) > 0) {
       b.kenpc = number_(kenpcVal);
     }
-    b.reviews += number_(r[AD.COL.REVIEWS]);
+    // Reviews/comments: take MAX across ASINs (formats often share the same Amazon pool).
+    const rev = number_(r[AD.COL.REVIEWS]);
+    if (rev > b.reviews) b.reviews = rev;
     if (number_(r[AD.COL.RATING]) > 0) b.ratings.push(number_(r[AD.COL.RATING]));
     if (isValidDate_(r[AD.COL.LAST_DATA_DATE])) b.dates.push(new Date(r[AD.COL.LAST_DATA_DATE]));
   });
 
-  // If KENP $ was never written to Manual Entry, still show pages × estimated rate on Catalog.
+  // If KENP $ was never written to Manual Entry, estimate from pages × rate.
+  // Prefer splits sum over summing Lifetime Royalties (avoids double-count when
+  // each format row wrongly held the full book total).
   const kenpRate = getEstimatedKenpRoyaltyRate_();
   books.forEach(b => {
-    if (!(b.ku > 0) || !(kenpRate > 0) || b.royKenp > 0) return;
-    const est = Math.round(b.ku * kenpRate * 100) / 100;
-    b.royKenp = est;
-    b.roy = Math.round((b.roy + est) * 100) / 100;
+    if (b.ku > 0 && kenpRate > 0 && !(b.royKenp > 0)) {
+      b.royKenp = Math.round(b.ku * kenpRate * 100) / 100;
+    }
+    const fromSplits = b.royEbook + b.royPrint + b.royKenp;
+    if (fromSplits > 0.009) {
+      b.roy = Math.round(fromSplits * 100) / 100;
+    }
   });
 
   const best = getBestOverallRanksByBook_();

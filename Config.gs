@@ -43,6 +43,7 @@ const AD = {
   SHEETS: {
     INPUT: 'Manual Entry',
     DASHBOARD: 'Dashboard',
+    STATISTICS: 'Statistics',
     VISUAL: 'Visual Dashboard',
     VISUAL_DATA: '_Visual Chart Data',
     CATALOG: 'Catalog Summary',

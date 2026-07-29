@@ -73,6 +73,8 @@ function processKdpSalesUpload(payload) {
 
     ensureInputKuRoyaltySchema_();
     assignInternalIds_();
+    maybeResetInflatedKdpMonthStore_(meta);
+    repairDuplicateFormatRoyalties_();
     const summary = applyKdpTotalsToManualEntry_(totals, meta);
     recomputeLifetimeRoyaltiesFromSplits_();
     summary.fileName = payload.fileName || '';
@@ -301,6 +303,107 @@ function sumBookRoyaltyUsd_(totals) {
   return sum;
 }
 
+/**
+ * If Manual Entry lifetime royalties are far above KDP Summary, stored month
+ * slices were almost certainly double-counted or cumulative. Clear them so the
+ * next month uploads rebuild lifetime cleanly.
+ */
+function maybeResetInflatedKdpMonthStore_(meta) {
+  const summaryUsd = meta && number_(meta.summaryRoyaltyUsd);
+  if (!(summaryUsd > 0)) return false;
+  let manualUsd = 0;
+  getInputRows_().forEach(r => {
+    if (normalizeKey_(r[AD.COL.STORE]) !== 'amazon') return;
+    manualUsd += number_(r[AD.COL.ROYALTIES]);
+  });
+  if (!(manualUsd > summaryUsd * 1.35)) return false;
+  try {
+    PropertiesService.getDocumentProperties().deleteProperty('AD_KDP_MONTH_CONTRIBS');
+    PropertiesService.getDocumentProperties().deleteProperty('AD_KDP_LAST_PARTIAL_FP');
+    PropertiesService.getDocumentProperties().deleteProperty('AD_KDP_WEEK_PARTIAL_ADDS');
+    if (meta.warnings) {
+      meta.warnings.push(
+        'Cleared stored KDP month contributions — Manual Entry royalties ($' +
+          manualUsd.toFixed(2) + ') were far above KDP Summary ($' +
+          summaryUsd.toFixed(2) +
+          '). Re-upload each prior month’s report to rebuild lifetime.'
+      );
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * When Kindle + print rows each hold the same full-book royalty splits (old bug),
+ * keep format-scoped fields only so Catalog no longer triples KDP Summary.
+ */
+function repairDuplicateFormatRoyalties_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AD.SHEETS.INPUT);
+  if (!sh || sh.getLastRow() < 2) return 0;
+  const values = sh.getRange(2, 1, sh.getLastRow() - 1, AD.INPUT_HEADERS.length).getValues();
+  const byBook = new Map();
+  values.forEach((r, i) => {
+    if (normalizeKey_(r[AD.COL.STORE]) !== 'amazon') return;
+    const id = clean_(r[AD.COL.BOOK_ID]);
+    if (!id) return;
+    if (!byBook.has(id)) byBook.set(id, []);
+    byBook.get(id).push({ r: r, i: i });
+  });
+
+  let fixed = 0;
+  byBook.forEach(list => {
+    if (list.length < 2) return;
+    const totals = list.map(x => number_(x.r[AD.COL.ROYALTIES]));
+    const nonzero = totals.filter(t => t > 0.009);
+    if (nonzero.length < 2) return;
+    const first = nonzero[0];
+    const allSame = nonzero.every(t => Math.abs(t - first) < 0.02);
+    if (!allSame) return;
+
+    // Same total on multiple formats → classic double-count.
+    const ebook = list.find(x => listingFormatKind_(x.r[AD.COL.FORMAT]) === 'ebook');
+    const prints = list.filter(x => {
+      const k = listingFormatKind_(x.r[AD.COL.FORMAT]);
+      return k === 'paperback' || k === 'hardcover';
+    });
+    if (!ebook || !prints.length) return;
+
+    const hasSplits = number_(ebook.r[AD.COL.ROYALTY_EBOOK]) +
+      number_(ebook.r[AD.COL.ROYALTY_PRINT]) +
+      number_(ebook.r[AD.COL.ROYALTY_KENP]) > 0.009;
+    if (!hasSplits) return;
+
+    const srcE = number_(ebook.r[AD.COL.ROYALTY_EBOOK]);
+    const srcP = number_(ebook.r[AD.COL.ROYALTY_PRINT]);
+    const srcK = number_(ebook.r[AD.COL.ROYALTY_KENP]);
+    const srcU = number_(ebook.r[AD.COL.UNITS]);
+    const srcKenp = number_(ebook.r[AD.COL.KU]);
+
+    const eRow = ebook.i + 2;
+    sh.getRange(eRow, AD.COL.ROYALTY_EBOOK + 1).setValue(srcE);
+    sh.getRange(eRow, AD.COL.ROYALTY_PRINT + 1).setValue(0);
+    sh.getRange(eRow, AD.COL.ROYALTY_KENP + 1).setValue(srcK);
+    sh.getRange(eRow, AD.COL.ROYALTIES + 1).setValue(Math.round((srcE + srcK) * 100) / 100);
+    sh.getRange(eRow, AD.COL.UNITS + 1).setValue(srcU);
+    sh.getRange(eRow, AD.COL.KU + 1).setValue(srcKenp);
+
+    prints.forEach((x, idx) => {
+      const rowNum = x.i + 2;
+      const printAmt = idx === 0 ? srcP : 0;
+      sh.getRange(rowNum, AD.COL.ROYALTY_EBOOK + 1).setValue(0);
+      sh.getRange(rowNum, AD.COL.ROYALTY_PRINT + 1).setValue(printAmt);
+      sh.getRange(rowNum, AD.COL.ROYALTY_KENP + 1).setValue(0);
+      sh.getRange(rowNum, AD.COL.ROYALTIES + 1).setValue(printAmt);
+      sh.getRange(rowNum, AD.COL.UNITS + 1).setValue(0);
+      sh.getRange(rowNum, AD.COL.KU + 1).setValue(0);
+    });
+    fixed++;
+  });
+  return fixed;
+}
+
 function parseLooseDate_(v) {
   if (v === null || v === undefined || v === '') return null;
   if (Object.prototype.toString.call(v) === '[object Date]' && isValidDate_(v)) {
@@ -405,9 +508,20 @@ function applyKdpTotalsToManualEntry_(totals, meta) {
   const rows = sh.getRange(2, 1, sh.getLastRow() - 1, AD.INPUT_HEADERS.length).getValues();
   const matchedKeys = new Set();
   const today = getSpreadsheetToday_();
+  const claimMap = new Map();
 
-  rows.forEach((r, i) => {
-    if (normalizeKey_(r[AD.COL.STORE]) !== 'amazon') return;
+  // Apply ebook listings before print so units/KENP claim correctly when ASIN↔ISBN aliased.
+  const order = rows
+    .map((r, i) => ({ r: r, i: i }))
+    .filter(x => normalizeKey_(x.r[AD.COL.STORE]) === 'amazon')
+    .sort((a, b) => {
+      const ka = listingFormatKind_(a.r[AD.COL.FORMAT]);
+      const kb = listingFormatKind_(b.r[AD.COL.FORMAT]);
+      const rank = k => (k === 'ebook' ? 0 : k === 'paperback' ? 1 : k === 'hardcover' ? 2 : 3);
+      return rank(ka) - rank(kb);
+    });
+
+  order.forEach(({ r, i }) => {
     const keys = listingIdentifierKeys_(r);
     if (!keys.length) return;
 
@@ -429,10 +543,11 @@ function applyKdpTotalsToManualEntry_(totals, meta) {
     const curR = r[AD.COL.ROYALTIES];
     let wrote = false;
     const notes = [];
+    const split = splitKdpHitForListing_(hit, r[AD.COL.FORMAT], claimBucketForHit_(claimMap, hit));
 
     // Units
-    if (hit.units != null && hit.units !== '') {
-      const next = number_(hit.units);
+    if (split.units !== '') {
+      const next = number_(split.units);
       const hasCur = curU !== '' && curU !== null && curU !== undefined;
       if (hasCur && next < number_(curU)) {
         summary.skippedLowerUnits++;
@@ -446,9 +561,9 @@ function applyKdpTotalsToManualEntry_(totals, meta) {
       }
     }
 
-    // KENP
-    if (hit.kenp != null && hit.kenp !== '') {
-      const next = number_(hit.kenp);
+    // KENP pages
+    if (split.kenp !== '') {
+      const next = number_(split.kenp);
       const hasCur = curK !== '' && curK !== null && curK !== undefined;
       if (hasCur && next < number_(curK)) {
         summary.skippedLowerKenp++;
@@ -462,32 +577,27 @@ function applyKdpTotalsToManualEntry_(totals, meta) {
       }
     }
 
-    // Royalty splits (eBook / Print / KENP) + total = sum.
-    // If xlsx lacks KENP $, hit.royaltyKenp may already be pages × estimated rate.
-    const nextEbook = number_(hit.royaltyEbook);
-    const nextPrint = number_(hit.royaltyPrint);
-    const nextKenpR = Math.round(number_(hit.royaltyKenp) * 100) / 100;
-    const nextTotal = Math.round((nextEbook + nextPrint + nextKenpR) * 100) / 100;
-    if ((hit.royaltyUsd != null && hit.royaltyUsd !== '') || nextEbook || nextPrint || nextKenpR) {
-      const hasCur = curR !== '' && curR !== null && curR !== undefined;
-      if (hasCur && nextTotal < number_(curR) - 0.009 && meta && meta.kenpRoyaltiesInReport) {
-        summary.skippedLowerRoyalties++;
-        notes.push('royalties not lowered');
-      } else if (!hasCur || nextTotal >= number_(curR) - 0.009 || !(meta && meta.kenpRoyaltiesInReport)) {
-        if (!hasCur || Math.abs(nextTotal - number_(curR)) > 0.009 ||
-            Math.abs(nextEbook - number_(r[AD.COL.ROYALTY_EBOOK])) > 0.009 ||
-            Math.abs(nextPrint - number_(r[AD.COL.ROYALTY_PRINT])) > 0.009 ||
-            Math.abs(nextKenpR - number_(r[AD.COL.ROYALTY_KENP])) > 0.009) {
-          sh.getRange(rowNum, AD.COL.ROYALTY_EBOOK + 1).setValue(nextEbook);
-          sh.getRange(rowNum, AD.COL.ROYALTY_PRINT + 1).setValue(nextPrint);
-          sh.getRange(rowNum, AD.COL.ROYALTY_KENP + 1).setValue(nextKenpR);
-          sh.getRange(rowNum, AD.COL.ROYALTIES + 1).setValue(nextTotal);
-          summary.royaltiesSet += nextTotal;
-          summary.ebookRoyaltiesSet += nextEbook;
-          summary.printRoyaltiesSet += nextPrint;
-          summary.kenpRoyaltiesSet += nextKenpR;
-          wrote = true;
-        }
+    // Format-scoped royalty splits (always replace on full apply — fixes prior double-counts).
+    const nextEbook = number_(split.royaltyEbook);
+    const nextPrint = number_(split.royaltyPrint);
+    const nextKenpR = number_(split.royaltyKenp);
+    const nextTotal = number_(split.royaltyUsd);
+    if (nextEbook || nextPrint || nextKenpR || nextTotal || curR !== '' && curR != null) {
+      if (
+        Math.abs(nextTotal - number_(curR)) > 0.009 ||
+        Math.abs(nextEbook - number_(r[AD.COL.ROYALTY_EBOOK])) > 0.009 ||
+        Math.abs(nextPrint - number_(r[AD.COL.ROYALTY_PRINT])) > 0.009 ||
+        Math.abs(nextKenpR - number_(r[AD.COL.ROYALTY_KENP])) > 0.009
+      ) {
+        sh.getRange(rowNum, AD.COL.ROYALTY_EBOOK + 1).setValue(nextEbook);
+        sh.getRange(rowNum, AD.COL.ROYALTY_PRINT + 1).setValue(nextPrint);
+        sh.getRange(rowNum, AD.COL.ROYALTY_KENP + 1).setValue(nextKenpR);
+        sh.getRange(rowNum, AD.COL.ROYALTIES + 1).setValue(nextTotal);
+        summary.royaltiesSet += nextTotal;
+        summary.ebookRoyaltiesSet += nextEbook;
+        summary.printRoyaltiesSet += nextPrint;
+        summary.kenpRoyaltiesSet += nextKenpR;
+        wrote = true;
       }
     }
 
@@ -563,11 +673,20 @@ function applyKdpMonthContribToManualEntry_(totals, meta, summary) {
   const rows = sh.getRange(2, 1, sh.getLastRow() - 1, AD.INPUT_HEADERS.length).getValues();
   const matchedKeys = new Set();
   const listingByKey = {};
+  const claimMap = new Map();
 
-  rows.forEach((r, i) => {
-    if (normalizeKey_(r[AD.COL.STORE]) !== 'amazon') return;
+  const order = rows
+    .map((r, i) => ({ r: r, i: i }))
+    .filter(x => normalizeKey_(x.r[AD.COL.STORE]) === 'amazon' && clean_(x.r[AD.COL.LISTING_ID]))
+    .sort((a, b) => {
+      const ka = listingFormatKind_(a.r[AD.COL.FORMAT]);
+      const kb = listingFormatKind_(b.r[AD.COL.FORMAT]);
+      const rank = k => (k === 'ebook' ? 0 : k === 'paperback' ? 1 : k === 'hardcover' ? 2 : 3);
+      return rank(ka) - rank(kb);
+    });
+
+  order.forEach(({ r, i }) => {
     const listing = clean_(r[AD.COL.LISTING_ID]);
-    if (!listing) return;
     listingByKey[listing] = { row: r, rowNum: i + 2 };
     const keys = listingIdentifierKeys_(r);
     let hit = null;
@@ -581,12 +700,13 @@ function applyKdpMonthContribToManualEntry_(totals, meta, summary) {
     }
     if (!hit) return;
     matchedKeys.add(hitKey);
+    const split = splitKdpHitForListing_(hit, r[AD.COL.FORMAT], claimBucketForHit_(claimMap, hit));
     monthSlice[listing] = {
-      u: number_(hit.units),
-      k: number_(hit.kenp),
-      e: number_(hit.royaltyEbook),
-      p: number_(hit.royaltyPrint),
-      kr: Math.round(number_(hit.royaltyKenp) * 100) / 100
+      u: number_(split.units === '' ? 0 : split.units),
+      k: number_(split.kenp === '' ? 0 : split.kenp),
+      e: number_(split.royaltyEbook),
+      p: number_(split.royaltyPrint),
+      kr: number_(split.royaltyKenp)
     };
   });
 
@@ -799,9 +919,19 @@ function applyKdpWeekReplaceToManualEntry_(totals, meta, summary) {
   const rows = sh.getRange(2, 1, sh.getLastRow() - 1, AD.INPUT_HEADERS.length).getValues();
   const matchedKeys = new Set();
   const today = getSpreadsheetToday_();
+  const claimMap = new Map();
 
-  rows.forEach((r, i) => {
-    if (normalizeKey_(r[AD.COL.STORE]) !== 'amazon') return;
+  const order = rows
+    .map((r, i) => ({ r: r, i: i }))
+    .filter(x => normalizeKey_(x.r[AD.COL.STORE]) === 'amazon' && clean_(x.r[AD.COL.LISTING_ID]))
+    .sort((a, b) => {
+      const ka = listingFormatKind_(a.r[AD.COL.FORMAT]);
+      const kb = listingFormatKind_(b.r[AD.COL.FORMAT]);
+      const rank = k => (k === 'ebook' ? 0 : k === 'paperback' ? 1 : k === 'hardcover' ? 2 : 3);
+      return rank(ka) - rank(kb);
+    });
+
+  order.forEach(({ r, i }) => {
     const listing = clean_(r[AD.COL.LISTING_ID]);
     const keys = listingIdentifierKeys_(r);
     if (!keys.length || !listing) return;
@@ -819,11 +949,12 @@ function applyKdpWeekReplaceToManualEntry_(totals, meta, summary) {
     matchedKeys.add(hitKey);
 
     const rowNum = i + 2;
-    const newU = number_(hit.units);
-    const newK = number_(hit.kenp);
-    const newEbook = number_(hit.royaltyEbook);
-    const newPrint = number_(hit.royaltyPrint);
-    const newKenpR = Math.round(number_(hit.royaltyKenp) * 100) / 100;
+    const split = splitKdpHitForListing_(hit, r[AD.COL.FORMAT], claimBucketForHit_(claimMap, hit));
+    const newU = number_(split.units === '' ? 0 : split.units);
+    const newK = number_(split.kenp === '' ? 0 : split.kenp);
+    const newEbook = number_(split.royaltyEbook);
+    const newPrint = number_(split.royaltyPrint);
+    const newKenpR = number_(split.royaltyKenp);
     const prev = prevWeek[listing] || { u: 0, k: 0, e: 0, p: 0, kr: 0 };
 
     // lifetime - previous same-week contribution + this report’s contribution
@@ -1118,6 +1249,90 @@ function listingIdentifierKeys_(row) {
   const asin = normalizeAsin_(row[AD.COL.IDENTIFIER]);
   if (asin && keys.indexOf(asin) === -1) keys.push(asin);
   return keys;
+}
+
+/** ebook | paperback | hardcover | other */
+function listingFormatKind_(format) {
+  const n = normalizeKey_(format);
+  if (/kindle|ebook|e-book/.test(n)) return 'ebook';
+  if (/paper/.test(n)) return 'paperback';
+  if (/hard/.test(n)) return 'hardcover';
+  return 'other';
+}
+
+/**
+ * Map a KDP hit onto one Manual Entry listing without double-counting.
+ * When ASIN/ISBN alias into one totals object, ebook + print listings used to
+ * each get the FULL book royalties → Catalog summed 2–3× KDP Summary.
+ * claims is per hit-object: { units, kenpPages, printRoy }.
+ */
+function splitKdpHitForListing_(hit, format, claims) {
+  const kind = listingFormatKind_(format);
+  const c = claims || {};
+  const out = {
+    units: '',
+    kenp: '',
+    royaltyEbook: 0,
+    royaltyPrint: 0,
+    royaltyKenp: 0,
+    royaltyUsd: 0
+  };
+
+  if (kind === 'ebook') {
+    out.royaltyEbook = number_(hit.royaltyEbook);
+    out.royaltyKenp = Math.round(number_(hit.royaltyKenp) * 100) / 100;
+    if (!c.kenpPages) {
+      out.kenp = number_(hit.kenp);
+      c.kenpPages = true;
+    } else {
+      out.kenp = 0;
+    }
+    if (!c.units) {
+      out.units = number_(hit.units);
+      c.units = true;
+    } else {
+      out.units = 0;
+    }
+  } else if (kind === 'paperback' || kind === 'hardcover') {
+    if (!c.printRoy) {
+      out.royaltyPrint = number_(hit.royaltyPrint);
+      c.printRoy = true;
+    }
+    if (!c.units) {
+      out.units = number_(hit.units);
+      c.units = true;
+    } else {
+      out.units = 0;
+    }
+    out.kenp = 0;
+  } else {
+    // Unknown format — take whatever has not been claimed yet (legacy rows).
+    if (!c.units) {
+      out.units = number_(hit.units);
+      c.units = true;
+    } else out.units = 0;
+    if (!c.kenpPages) {
+      out.kenp = number_(hit.kenp);
+      c.kenpPages = true;
+    } else out.kenp = 0;
+    out.royaltyEbook = number_(hit.royaltyEbook);
+    if (!c.printRoy) {
+      out.royaltyPrint = number_(hit.royaltyPrint);
+      c.printRoy = true;
+    }
+    out.royaltyKenp = Math.round(number_(hit.royaltyKenp) * 100) / 100;
+  }
+
+  out.royaltyUsd = Math.round(
+    (out.royaltyEbook + out.royaltyPrint + out.royaltyKenp) * 100
+  ) / 100;
+  return out;
+}
+
+/** Weak identity map for hit objects during one apply pass. */
+function claimBucketForHit_(claimMap, hit) {
+  if (!claimMap.has(hit)) claimMap.set(hit, {});
+  return claimMap.get(hit);
 }
 
 function formatKdpImportSummary_(summary) {

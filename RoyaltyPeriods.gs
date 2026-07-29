@@ -25,15 +25,21 @@ function ensureRoyaltyPeriodsSheet_() {
 /**
  * Working Estimated KENP Royalty Rate (USD per page).
  * Prefers a rate learned from real KENP $ ÷ pages; else Config seed.
+ * Ignores absurd rates (corruption from lifetime $ ÷ period pages).
  */
 function getEstimatedKenpRoyaltyRate_() {
+  const sane = r => number_(r) > 0 && number_(r) <= 0.05;
+
   try {
     const stored = PropertiesService.getDocumentProperties().getProperty('estimatedKenpRoyaltyRate');
-    if (stored && number_(stored) > 0) return number_(stored);
+    if (sane(stored)) return number_(stored);
+    if (stored && !sane(stored)) {
+      PropertiesService.getDocumentProperties().deleteProperty('estimatedKenpRoyaltyRate');
+    }
   } catch (e) {}
 
   const period = getLatestRoyaltyPeriod_();
-  if (period && number_(period.ratePerKenp) > 0) return number_(period.ratePerKenp);
+  if (period && sane(period.ratePerKenp)) return number_(period.ratePerKenp);
 
   let pages = 0;
   let roy = 0;
@@ -41,14 +47,14 @@ function getEstimatedKenpRoyaltyRate_() {
     pages += number_(r[AD.COL.KU]);
     roy += number_(r[AD.COL.ROYALTY_KENP]);
   });
-  if (pages > 0 && roy > 0) return roy / pages;
+  if (pages > 0 && roy > 0 && sane(roy / pages)) return roy / pages;
 
   if (AD.ESTIMATED_KENP_RATE_USD > 0) return number_(AD.ESTIMATED_KENP_RATE_USD);
   return null;
 }
 
 function storeEstimatedKenpRoyaltyRate_(rate) {
-  if (!(number_(rate) > 0)) return;
+  if (!(number_(rate) > 0) || number_(rate) > 0.05) return;
   try {
     PropertiesService.getDocumentProperties().setProperty(
       'estimatedKenpRoyaltyRate',
@@ -214,61 +220,12 @@ function sumManualKenpRoyalties_() {
 }
 
 /**
- * After the user enters Estimated KENP $ on Manual Entry, refresh the latest
- * Royalty Periods row (same period's KENP pages + new KENP $) and recompute rate.
+ * Do not copy lifetime Manual Entry KENP $ into a single Royalty Periods row.
+ * That mixed lifetime $ with period pages and inflated $/KENP (feedback into estimates).
+ * Period rows are written only from KDP uploads via upsertRoyaltyPeriodFromKdp_.
  */
 function syncLatestRoyaltyPeriodKenpFromManual_() {
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(AD.SHEETS.ROYALTY_PERIODS);
-  if (!sh || sh.getLastRow() < 2) return false;
-  const kenpRoy = sumManualKenpRoyalties_();
-  if (!(kenpRoy > 0)) return false;
-
-  const values = sh.getRange(2, 1, sh.getLastRow() - 1, AD.ROYALTY_PERIOD_HEADERS.length).getValues();
-  let bestIdx = -1;
-  let bestTime = -1;
-  values.forEach((r, i) => {
-    const imported = isValidDate_(r[17]) ? new Date(r[17]).getTime() : 0;
-    const end = isValidDate_(r[1]) ? new Date(r[1]).getTime() : 0;
-    const score = imported || end;
-    if (score >= bestTime) {
-      bestTime = score;
-      bestIdx = i;
-    }
-  });
-  if (bestIdx < 0) return false;
-
-  const r = values[bestIdx];
-  const totalKenp = number_(r[2]);
-  if (!(totalKenp > 0)) return false;
-
-  const ebook = number_(r[8]);
-  const print = number_(r[9]);
-  const kenpcInfo = getPortfolioKenpcForCalc_();
-  const metrics = computeKuRoyaltyMetrics_({
-    totalKenp: totalKenp,
-    kenpRoyalties: kenpRoy,
-    ebookRoyalties: ebook,
-    printRoyalties: print,
-    kenpc: kenpcInfo.kenpc,
-    useKenpc: kenpcInfo.useForPortfolio
-  });
-
-  const rowNum = bestIdx + 2;
-  sh.getRange(rowNum, 4).setValue(kenpRoy);
-  sh.getRange(rowNum, 5).setValue(metrics.ratePerKenp === null ? '' : metrics.ratePerKenp);
-  sh.getRange(rowNum, 6).setValue(kenpcInfo.useForPortfolio ? kenpcInfo.kenpc : '');
-  sh.getRange(rowNum, 7).setValue(metrics.equivalentReads === null ? '' : metrics.equivalentReads);
-  sh.getRange(rowNum, 8).setValue(metrics.fullReadRoyalty === null ? '' : metrics.fullReadRoyalty);
-  sh.getRange(rowNum, 11).setValue(metrics.totalRoyalties);
-  sh.getRange(rowNum, 12).setValue(metrics.mixEbook === null ? '' : metrics.mixEbook);
-  sh.getRange(rowNum, 13).setValue(metrics.mixPrint === null ? '' : metrics.mixPrint);
-  sh.getRange(rowNum, 14).setValue(metrics.mixKenp === null ? '' : metrics.mixKenp);
-  sh.getRange(rowNum, 15).setValue('estimated (KENP $ from Manual Entry)');
-  sh.getRange(rowNum, 16).setValue(metrics.reconcileDiff);
-  sh.getRange(rowNum, 17).setValue(metrics.reconcileOk ? 'YES' : 'FLAG');
-  formatRoyaltyPeriodsSheet_(sh);
-  try { sh.hideSheet(); } catch (e) {}
-  return true;
+  return false;
 }
 
 /** Deduped sum of listing royalty buckets from buildKdpTotalsFromRows_. */

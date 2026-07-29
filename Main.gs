@@ -1,9 +1,16 @@
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Author Dashboard')
     .addItem('Refresh Everything', 'refreshEverything')
+    .addItem('Update Amazon Rankings Now', 'updateAmazonRanks')
     .addItem('Upload KDP Sales Report', 'uploadKdpSalesReport')
     .addItem('Connect Meta Ads…', 'configureMetaApiCredentials')
+    .addSeparator()
+    .addItem('Install Daily Jobs (5 AM)', 'installDailyJobs')
+    .addItem('Remove Daily Jobs', 'removeDailyJobs')
     .addToUi();
+  try { ensureDailyJobsInstalled_(); } catch (e) {
+    console.error('ensureDailyJobsInstalled_ onOpen: ' + e);
+  }
 }
 
 // Compatibility alias for earlier versions.
@@ -33,6 +40,7 @@ function initializeDashboard() {
 
   temp.setName(AD.SHEETS.INPUT);
   const dashboard = ss.insertSheet(AD.SHEETS.DASHBOARD);
+  const statistics = ss.insertSheet(AD.SHEETS.STATISTICS);
   ensureVisualDashboard_();
   const catalog = ss.insertSheet(AD.SHEETS.CATALOG);
   const sales = ss.insertSheet(AD.SHEETS.SALES);
@@ -41,6 +49,7 @@ function initializeDashboard() {
 
   buildInputSheet_(temp);
   buildDashboardSheet_(dashboard);
+  buildStatisticsSheet_(statistics);
   buildCatalogSheet_(catalog);
   buildHistorySheet_(sales, AD.SALES_HEADERS);
   buildHistorySheet_(ranks, AD.RANK_HEADERS);
@@ -54,10 +63,16 @@ function initializeDashboard() {
   orderSheets_();
   orderReportSheets_();
   refreshEverything();
+  installDailyTrigger_(false);
+  installDailyRankTrigger_(false);
   lockAutomaticSheets();
   ss.setActiveSheet(temp);
   ss.moveActiveSheet(1);
-  ui.alert('Author Dashboard created. Manual Entry is the only sheet you need to edit.');
+  ui.alert(
+    'Author Dashboard created. Manual Entry is the only sheet you need to edit.\n\n' +
+      'Daily jobs installed for ' + AD.DAILY_TRIGGER_HOUR + ':00 AM ' + AD.TZ +
+      ' (sales refresh + Amazon ranks).'
+  );
 }
 
 function refreshEverything() {
@@ -76,6 +91,8 @@ function refreshEverything() {
   recomputeSalesPeriodChangesFromLifetime_();
   ensureInputKuRoyaltySchema_();
   ensureRoyaltyPeriodsSheet_();
+  getEstimatedKenpRoyaltyRate_(); // clears corrupted stored rate as side effect
+  repairDuplicateFormatRoyalties_();
   syncEstimatedKenpRoyaltiesFromRate_();
   recomputeLifetimeRoyaltiesFromSplits_();
   syncLatestRoyaltyPeriodKenpFromManual_();
@@ -104,11 +121,15 @@ function refreshEverything() {
   syncAutoEvents_();
   refreshSalesReports_();
   rebuildCatalogSummary_();
+  setLastDashboardRun_('menu');
   refreshDashboard_();
   rebuildReconciliationSheet_();
   processMarketingEntries_(false);
   orderReportSheets_();
   hideDiagnosticSheets_();
+  try { ensureDailyJobsInstalled_(); } catch (e) {
+    console.error('ensureDailyJobsInstalled_ refresh: ' + e);
+  }
   lockAutomaticSheets();
 }
 
