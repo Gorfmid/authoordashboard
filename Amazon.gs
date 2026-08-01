@@ -60,8 +60,15 @@ function fetchAmazonListingData_(asin, formatHint) {
       const parsed = isReader
         ? parseAmazonReaderText_(body, normalized, productUrl, formatHint)
         : parseAmazonHtml_(body, normalized, productUrl, formatHint);
+      // Reader fallback often lacks Best Sellers Rank — keep trying other URLs.
       if (parsed.success) {
-        if (isReader) parsed.source = 'reader-fallback';
+        if (isReader) {
+          parsed.source = 'reader-fallback';
+          if (!parsed.overallRank && !(parsed.categoryRanks || []).length) {
+            lastFailure = parsed;
+            continue;
+          }
+        }
         return parsed;
       }
       lastFailure = parsed;

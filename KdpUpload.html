@@ -97,12 +97,13 @@
   <body>
     <h2>Upload KDP sales report</h2>
     <p>
-      Choose the KDP Dashboard <strong>.xlsx</strong> from your computer.
-      It will be processed in place — no extra sheets are added to your workbook.
+      Choose a KDP <strong>.xlsx</strong> from your computer
+      (Dashboard <em>Month</em> export or <em>Prior Month Royalties</em>).
+      Processed in place — no extra sheets are added to your workbook.
     </p>
     <p>
-      <strong>Lifetime only:</strong> use an All-time / full-life report.
-      Partial date-range reports are detected and will <em>not</em> overwrite Lifetime Units, KENP, or Royalties.
+      <strong>Recommended:</strong> after a month closes, upload <em>Prior Month Royalties</em>
+      as the final slice for that month. Mid-month Dashboard Month exports are fine for updates.
     </p>
     <p>
       Need the file?
@@ -123,7 +124,7 @@
 
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <script>
-      const NEEDED = [
+      const DASHBOARD_SHEETS = [
         'Combined Sales',
         'Orders Processed',
         'KENP Read',
@@ -132,22 +133,101 @@
         'Hardcover Royalty',
         'Summary'
       ];
+      const PRIOR_SHEETS = [
+        'Total Earnings',
+        'KENP Read',
+        'eBook Royalty',
+        'Paperback Royalty',
+        'Hardcover Royalty'
+      ];
+
+      function cellStr(v) {
+        if (v == null) return '';
+        if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
+          const y = v.getFullYear();
+          const m = String(v.getMonth() + 1).padStart(2, '0');
+          const d = String(v.getDate()).padStart(2, '0');
+          return y + '-' + m + '-' + d;
+        }
+        return String(v);
+      }
 
       function normalizeSheetRows(rows) {
         return (rows || []).map(function (row) {
           const o = {};
           Object.keys(row).forEach(function (k) {
-            var v = row[k];
-            if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
-              const y = v.getFullYear();
-              const m = String(v.getMonth() + 1).padStart(2, '0');
-              const d = String(v.getDate()).padStart(2, '0');
-              v = y + '-' + m + '-' + d;
-            }
-            o[k] = v;
+            o[k] = cellStr(row[k]);
           });
           return o;
         });
+      }
+
+      /** Prior Month Royalties: row0 = Sales Period | July 2026, row1 = headers, row2+ = data. */
+      function parseSheetMatrix(wb, name) {
+        const ws = wb.Sheets[name];
+        if (!ws) return { rows: [], salesPeriod: '' };
+        const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+        if (!matrix || !matrix.length) return { rows: [], salesPeriod: '' };
+
+        let salesPeriod = '';
+        let headerIdx = 0;
+        const r0 = matrix[0] || [];
+        if (String(r0[0] || '').toLowerCase() === 'sales period') {
+          salesPeriod = cellStr(r0[1]).trim();
+          headerIdx = 1;
+        }
+        const headers = (matrix[headerIdx] || []).map(function (h) { return cellStr(h).trim(); });
+        if (!headers.length || !headers[0]) {
+          // Fallback: default sheet_to_json
+          return { rows: normalizeSheetRows(XLSX.utils.sheet_to_json(ws, { defval: '', raw: false })), salesPeriod: salesPeriod };
+        }
+
+        const rows = [];
+        for (let i = headerIdx + 1; i < matrix.length; i++) {
+          const line = matrix[i] || [];
+          if (!line.length) continue;
+          const first = cellStr(line[0]).trim();
+          if (!first || first.toLowerCase() === 'title') continue;
+          const obj = {};
+          let any = false;
+          headers.forEach(function (h, col) {
+            if (!h) return;
+            const v = cellStr(line[col]);
+            obj[h] = v;
+            if (v !== '') any = true;
+          });
+          if (!any) continue;
+          if (salesPeriod) obj['Sales Period'] = salesPeriod;
+          // Alias Prior Month fields toward Dashboard names
+          if (obj['Author Name'] == null && obj.Author != null) obj['Author Name'] = obj.Author;
+          if (obj.Royalty == null && obj.Earnings != null && String(obj.Earnings).toUpperCase() !== 'N/A') {
+            obj.Royalty = obj.Earnings;
+          }
+          rows.push(obj);
+        }
+        return { rows: rows, salesPeriod: salesPeriod };
+      }
+
+      /** Auto-detect: Prior Month Royalties vs Dashboard Month/Today export. */
+      function detectKdpFormat(wb) {
+        const names = wb.SheetNames || [];
+        const has = function (n) { return names.indexOf(n) !== -1; };
+        if (has('Total Earnings')) {
+          return { id: 'prior', label: 'Prior Month Royalties' };
+        }
+        if (has('Combined Sales') || has('Orders Processed') || has('Summary')) {
+          return { id: 'dashboard', label: 'Dashboard Month export' };
+        }
+        // Fallback: Sales Period banner on a royalty sheet
+        const probe = has('eBook Royalty') ? 'eBook Royalty' : (has('KENP Read') ? 'KENP Read' : '');
+        if (probe) {
+          const matrix = XLSX.utils.sheet_to_json(wb.Sheets[probe], { header: 1, defval: '', raw: false });
+          const r0 = (matrix && matrix[0]) || [];
+          if (String(r0[0] || '').toLowerCase() === 'sales period') {
+            return { id: 'prior', label: 'Prior Month Royalties' };
+          }
+        }
+        return { id: 'unknown', label: 'Unknown KDP workbook' };
       }
 
       const WAIT_MESSAGES = [
@@ -213,8 +293,8 @@
         goBtn.disabled = !(fileInput.files && fileInput.files[0]);
         status.className = '';
         status.textContent = fileInput.files && fileInput.files[0]
-          ? ('Ready: ' + fileInput.files[0].name)
-          : 'Select your KDP Dashboard .xlsx file.';
+          ? ('Ready: ' + fileInput.files[0].name + '\nFormat will be auto-detected on upload.')
+          : 'Select a KDP .xlsx (Dashboard Month or Prior Month Royalties).';
       });
 
       goBtn.addEventListener('click', async function () {
@@ -238,25 +318,50 @@
           status.textContent = 'Parsing KDP sheets…';
 
           const wb = XLSX.read(buffer, { type: 'array' });
-          const payload = { fileName: file.name, sheets: {} };
+          const fmt = detectKdpFormat(wb);
+          if (fmt.id === 'unknown') {
+            throw new Error(
+              'Could not detect KDP format. Use a Dashboard Month .xlsx or Prior Month Royalties .xlsx.'
+            );
+          }
+          const prior = fmt.id === 'prior';
+          const sheetList = prior ? PRIOR_SHEETS : DASHBOARD_SHEETS;
+          const payload = {
+            fileName: file.name,
+            sheets: {},
+            salesPeriod: '',
+            reportFormat: fmt.id,
+            reportFormatLabel: fmt.label
+          };
           let found = 0;
 
-          NEEDED.forEach(function (name, idx) {
+          setProgress(35, 'Detected: ' + fmt.label, false);
+          status.textContent = 'Detected: ' + fmt.label + '\nParsing sheets…';
+
+          sheetList.forEach(function (name, idx) {
             if (!wb.Sheets[name]) return;
-            const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '', raw: false });
-            payload.sheets[name] = normalizeSheetRows(rows);
-            if (name !== 'Summary') found++;
-            setProgress(30 + Math.round(((idx + 1) / NEEDED.length) * 25), 'Parsed: ' + name, false);
+            const parsed = parseSheetMatrix(wb, name);
+            if (parsed.salesPeriod && !payload.salesPeriod) payload.salesPeriod = parsed.salesPeriod;
+            payload.sheets[name] = parsed.rows;
+            // Map Prior Month "Total Earnings" into Combined Sales for the backend.
+            if (name === 'Total Earnings') {
+              payload.sheets['Combined Sales'] = parsed.rows;
+            }
+            if (name !== 'Summary' && parsed.rows.length) found++;
+            setProgress(35 + Math.round(((idx + 1) / sheetList.length) * 20), 'Parsed: ' + name, false);
           });
 
           if (!found) {
             throw new Error(
-              'No recognized KDP sheets found. Expected names like Combined Sales, Orders Processed, KENP Read.'
+              'Detected ' + fmt.label + ' but found no data rows. Re-download the report and try again.'
             );
           }
 
           setProgress(60, 'Sending to Google Sheet…', true);
-          status.textContent = 'Updating Manual Entry, Sales History, Catalog, and Dashboard…\nThis can take a bit — not frozen.';
+          status.textContent =
+            'Format: ' + fmt.label +
+            (payload.salesPeriod ? ' (' + payload.salesPeriod + ')' : '') +
+            '\nUpdating Manual Entry, Sales History, Catalog, and Dashboard…';
           startWaitMessages();
 
           google.script.run

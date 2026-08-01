@@ -44,7 +44,7 @@ function updateAmazonRanks_(showUi, asOfDate) {
     const rows = range.getValues();
     const today = asOfDate ? startOfDay_(asOfDate) : getSpreadsheetToday_();
     const week = getWeekEndingDate_(today);
-    const historyKeys = getRankHistoryDuplicateKeys_();
+    const historyRowMap = getRankHistoryRowMap_(); // key -> sheet row (upsert same-day)
     const historyOut = [];
 
     rows.forEach((r, i) => {
@@ -119,18 +119,15 @@ function updateAmazonRanks_(showUi, asOfDate) {
       if (result.overallRank && result.overallRank > 0) {
         const category = result.overallCategory || 'Kindle Store';
         const key = rankHistoryKey_(today, listingId, 'Overall', category);
-        if (!historyKeys.has(key)) {
-          historyOut.push(base.concat(['Overall', category, result.overallRank, result.url, 'OK']));
-          historyKeys.add(key);
-        }
+        const rowVals = base.concat(['Overall', category, result.overallRank, result.url, 'OK']);
+        upsertRankHistoryRow_(historyRowMap, historyOut, key, rowVals, summary);
       }
 
       (result.categoryRanks || []).forEach(cr => {
         if (!cr || !cr.rank || cr.rank <= 0 || !cr.category) return;
         const key = rankHistoryKey_(today, listingId, 'Category', cr.category);
-        if (historyKeys.has(key)) return;
-        historyOut.push(base.concat(['Category', cr.category, cr.rank, result.url, 'OK']));
-        historyKeys.add(key);
+        const rowVals = base.concat(['Category', cr.category, cr.rank, result.url, 'OK']);
+        upsertRankHistoryRow_(historyRowMap, historyOut, key, rowVals, summary);
       });
     });
 
@@ -138,7 +135,7 @@ function updateAmazonRanks_(showUi, asOfDate) {
       const rankSheet = getRequiredSheet_(AD.SHEETS.RANKS);
       appendRows_(rankSheet, historyOut);
       formatRankHistorySheet_(rankSheet);
-      summary.historyRowsAdded = historyOut.length;
+      summary.historyRowsAdded = (summary.historyRowsAdded || 0) + historyOut.length;
     }
 
     rebuildCatalogSummary_();
@@ -213,8 +210,11 @@ function formatRankUpdateSummary_(summary) {
     'If Robot checks > 0, Amazon blocked the script — wait a bit and retry.'
   ];
   if (summary.message) lines.push('', summary.message);
-  if (summary.successfulUpdates > 0 && summary.historyRowsAdded === 0) {
-    lines.push('', 'Note: no new history rows — duplicates for today were skipped.');
+  if (summary.historyRowsUpdated) {
+    lines.push('History rows updated (same-day refresh): ' + summary.historyRowsUpdated);
+  }
+  if (summary.successfulUpdates > 0 && !summary.historyRowsAdded && !summary.historyRowsUpdated) {
+    lines.push('', 'Note: ranks fetched but no history rows written.');
   }
   return lines.join('\n');
 }
@@ -300,14 +300,36 @@ function formatRankHistorySheet_(sh) {
 }
 
 function getRankHistoryDuplicateKeys_() {
+  return new Set(Object.keys(getRankHistoryRowMap_()));
+}
+
+/** Map date|listing|type|category -> 1-based sheet row for same-day upserts. */
+function getRankHistoryRowMap_() {
   const sh = getRequiredSheet_(AD.SHEETS.RANKS);
-  const set = new Set();
-  if (sh.getLastRow() < 2) return set;
-  sh.getRange(2, 1, sh.getLastRow() - 1, AD.RANK_HEADERS.length).getValues().forEach(r => {
+  const map = {};
+  if (sh.getLastRow() < 2) return map;
+  sh.getRange(2, 1, sh.getLastRow() - 1, AD.RANK_HEADERS.length).getValues().forEach((r, i) => {
     if (!isValidDate_(r[0]) || !clean_(r[3])) return;
-    set.add(rankHistoryKey_(new Date(r[0]), clean_(r[3]), clean_(r[8]), clean_(r[9])));
+    map[rankHistoryKey_(new Date(r[0]), clean_(r[3]), clean_(r[8]), clean_(r[9]))] = i + 2;
   });
-  return set;
+  return map;
+}
+
+/**
+ * Same calendar day: overwrite existing Rank History row with the latest scrape.
+ * New keys are queued for append.
+ */
+function upsertRankHistoryRow_(rowMap, historyOut, key, rowVals, summary) {
+  const existingRow = rowMap[key];
+  if (existingRow) {
+    const rankSheet = getRequiredSheet_(AD.SHEETS.RANKS);
+    rankSheet.getRange(existingRow, 1, 1, AD.RANK_HEADERS.length).setValues([rowVals]);
+    summary.historyRowsUpdated = (summary.historyRowsUpdated || 0) + 1;
+    return;
+  }
+  historyOut.push(rowVals);
+  // Negative placeholder so later categories in this run don't double-queue.
+  rowMap[key] = -1;
 }
 
 function rankHistoryKey_(date, listingId, rankType, category) {
@@ -428,7 +450,7 @@ function getOverallRankSeries_() {
 /**
  * Category tracker for Dashboard, grouped by format.
  * Best Rank Ever = lowest historical Category rank for that format+category.
- * Current Best = lowest Category rank from the latest snapshot date for that format+category.
+ * Current = latest Rank History row for that format+category (same day: last write wins).
  */
 function getCategoryRankSummaryByFormat_() {
   const sh = getRequiredSheet_(AD.SHEETS.RANKS);
@@ -436,35 +458,49 @@ function getCategoryRankSummaryByFormat_() {
   if (sh.getLastRow() < 2) return empty;
 
   const byKey = new Map();
-  sh.getRange(2, 1, sh.getLastRow() - 1, AD.RANK_HEADERS.length).getValues().forEach(r => {
+  const latestOverallByFormat = {};
+  const values = sh.getRange(2, 1, sh.getLastRow() - 1, AD.RANK_HEADERS.length).getValues();
+
+  values.forEach((r, idx) => {
     if (!isValidDate_(r[0])) return;
     const rankType = clean_(r[8]);
+    const format = clean_(r[6]);
+    if (!format) return;
+    const d = startOfDay_(new Date(r[0]));
+    const formatKey = normalizeKey_(format);
+
+    if (/^overall$/i.test(rankType)) {
+      if (!latestOverallByFormat[formatKey] || d > latestOverallByFormat[formatKey]) {
+        latestOverallByFormat[formatKey] = d;
+      }
+      return;
+    }
     if (!/^category$/i.test(rankType)) return;
+
     const category = clean_(r[9]);
     const rank = number_(r[10]);
-    const format = clean_(r[6]);
-    if (!category || rank <= 0 || !format) return;
+    if (!category || rank <= 0) return;
 
-    const d = startOfDay_(new Date(r[0]));
-    const key = normalizeKey_(format) + '|' + normalizeKey_(category);
+    const key = formatKey + '|' + normalizeKey_(category);
     if (!byKey.has(key)) {
       byKey.set(key, {
         format: format,
         category: category,
         bestEver: rank,
         latestDate: d,
-        currentBest: rank
+        currentBest: rank,
+        lastRow: idx
       });
       return;
     }
 
     const cur = byKey.get(key);
     if (rank < cur.bestEver) cur.bestEver = rank;
-    if (d > cur.latestDate) {
+    // Same calendar day: later sheet row wins (do NOT keep the day's best/lowest).
+    if (d > cur.latestDate || (dateKey_(d) === dateKey_(cur.latestDate) && idx >= cur.lastRow)) {
       cur.latestDate = d;
       cur.currentBest = rank;
-    } else if (dateKey_(d) === dateKey_(cur.latestDate) && rank < cur.currentBest) {
-      cur.currentBest = rank;
+      cur.lastRow = idx;
     }
   });
 
@@ -478,17 +514,25 @@ function getCategoryRankSummaryByFormat_() {
 
   const out = { ebook: [], paperback: [], hardcover: [], other: [] };
   [...byKey.values()].forEach(c => {
+    const formatKey = normalizeKey_(c.format);
+    const overallLatest = latestOverallByFormat[formatKey];
+    const stale = !!(overallLatest && c.latestDate < overallLatest);
     out[bucket(c.format)].push({
       format: c.format,
-      category: c.category,
+      category: c.category + (stale ? ' (stale)' : ''),
       bestEver: c.bestEver,
       currentBest: c.currentBest,
-      lastSeen: c.latestDate
+      lastSeen: c.latestDate,
+      stale: stale
     });
   });
 
   Object.keys(out).forEach(k => {
-    out[k].sort((a, b) => a.currentBest - b.currentBest || a.category.localeCompare(b.category));
+    out[k].sort((a, b) =>
+      Number(!!a.stale) - Number(!!b.stale) ||
+      a.currentBest - b.currentBest ||
+      a.category.localeCompare(b.category)
+    );
   });
   return out;
 }

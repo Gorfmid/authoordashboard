@@ -44,16 +44,22 @@ function processKdpSalesUpload(payload) {
     if (!payload || !payload.sheets) throw new Error('No report data received.');
 
     const found = {
-      combined: payload.sheets[AD.KDP_SHEETS.COMBINED] || null,
+      combined: payload.sheets[AD.KDP_SHEETS.COMBINED] ||
+        payload.sheets[AD.KDP_SHEETS.TOTAL_EARNINGS] || null,
       orders: payload.sheets[AD.KDP_SHEETS.ORDERS] || null,
       kenp: payload.sheets[AD.KDP_SHEETS.KENP] || null,
       ebook: payload.sheets[AD.KDP_SHEETS.EBOOK] || null,
       paperback: payload.sheets[AD.KDP_SHEETS.PAPERBACK] || null,
       hardcover: payload.sheets[AD.KDP_SHEETS.HARDCOVER] || null,
-      summary: payload.sheets[AD.KDP_SHEETS.SUMMARY] || null
+      summary: payload.sheets[AD.KDP_SHEETS.SUMMARY] || null,
+      salesPeriod: payload.salesPeriod || ''
     };
 
-    const hasAny = Object.keys(found).some(k => k !== 'summary' && found[k] && found[k].length);
+    normalizeKdpFoundSheets_(found, payload.fileName || '');
+
+    const hasAny = Object.keys(found).some(k =>
+      k !== 'summary' && k !== 'salesPeriod' && found[k] && found[k].length
+    );
     if (!hasAny) throw new Error('Report contained no usable KDP sales rows.');
 
     const totals = buildKdpTotalsFromRows_(found);
@@ -78,6 +84,8 @@ function processKdpSalesUpload(payload) {
     const summary = applyKdpTotalsToManualEntry_(totals, meta);
     recomputeLifetimeRoyaltiesFromSplits_();
     summary.fileName = payload.fileName || '';
+    summary.reportFormat = payload.reportFormat || '';
+    summary.reportFormatLabel = payload.reportFormatLabel || '';
     summary.reportMeta = {
       minDate: meta.minDate ? dateKey_(meta.minDate) : '',
       maxDate: meta.maxDate ? dateKey_(meta.maxDate) : '',
@@ -89,6 +97,8 @@ function processKdpSalesUpload(payload) {
       spanDays: meta.spanDays,
       isMonthReport: !!meta.isMonthReport,
       isPartial: meta.isPartial,
+      salesPeriod: found.salesPeriod || '',
+      reportFormat: payload.reportFormat || '',
       reasons: meta.reasons,
       warnings: meta.warnings || []
     };
@@ -184,8 +194,10 @@ function analyzeKdpReportMeta_(found, fileName, totals) {
   const reasons = [];
   const warnings = [];
   const name = String(fileName || '').toLowerCase();
-  // KDP Dashboard typical options: Month / Today / Yesterday (no All-time).
-  const monthStyle = looksLikeKdpMonthReport_(minDate, maxDate, spanDays, name);
+  // KDP Dashboard typical options: Month / Today / Yesterday / Prior Month Royalties.
+  const periodHint = clean_(found && found.salesPeriod);
+  let monthStyle = looksLikeKdpMonthReport_(minDate, maxDate, spanDays, name) ||
+    !!monthBoundsFromLabel_(periodHint);
   const dayStyle =
     !monthStyle &&
     spanDays != null &&
@@ -245,11 +257,11 @@ function analyzeKdpReportMeta_(found, fileName, totals) {
   };
 }
 
-/** Month / month-to-date is the normal KDP Dashboard export (no All-time option). */
+/** Month / month-to-date / Prior Month Royalties (KDP has no All-time option). */
 function looksLikeKdpMonthReport_(minDate, maxDate, spanDays, fileName) {
   const name = String(fileName || '').toLowerCase();
   if (/today|yesterday/.test(name) && !/month/.test(name)) return false;
-  if (/month|month.?to.?date|mtd/i.test(name)) return true;
+  if (/prior.?month|month.?royalt|month.?to.?date|\bmtd\b|\bmonth\b/i.test(name)) return true;
   if (!minDate || !maxDate || spanDays == null || spanDays < 8) return false;
   try {
     const a = new Date(minDate);
@@ -260,6 +272,126 @@ function looksLikeKdpMonthReport_(minDate, maxDate, spanDays, fileName) {
   } catch (e) {
     return false;
   }
+}
+
+/**
+ * Normalize Dashboard Month vs Prior Month Royalties row shapes before aggregation.
+ * Prior Month: Sales Period header, Author/Earnings columns, no daily dates.
+ */
+function normalizeKdpFoundSheets_(found, fileName) {
+  const periodLabel = clean_(found.salesPeriod) ||
+    extractSalesPeriodFromRows_(found) ||
+    extractSalesPeriodFromFileName_(fileName);
+  found.salesPeriod = periodLabel;
+
+  const periodBounds = monthBoundsFromLabel_(periodLabel);
+
+  ['combined', 'orders', 'kenp', 'ebook', 'paperback', 'hardcover'].forEach(key => {
+    if (!found[key] || !found[key].length) return;
+    found[key] = found[key]
+      .map(row => normalizeKdpInsightRow_(row, periodLabel, periodBounds))
+      .filter(row => row && !row.__skip);
+  });
+
+  // Prior-month files often have no daily dates — use calendar month bounds.
+  if (periodBounds && (!collectKdpDatesFromSheets_(found, ['orders', 'combined', 'ebook', 'paperback', 'hardcover', 'kenp']).length)) {
+    ['combined', 'ebook', 'paperback', 'hardcover', 'kenp', 'orders'].forEach(key => {
+      (found[key] || []).forEach(row => {
+        if (!row.Date && !row['Royalty Date'] && !row['Order Date']) {
+          row.Date = dateKey_(periodBounds.end);
+          row['Royalty Date'] = dateKey_(periodBounds.end);
+          row['Sales Period Start'] = dateKey_(periodBounds.start);
+          row['Sales Period End'] = dateKey_(periodBounds.end);
+        }
+      });
+    });
+  }
+}
+
+function extractSalesPeriodFromRows_(found) {
+  const keys = ['combined', 'ebook', 'paperback', 'hardcover', 'kenp', 'orders'];
+  for (let i = 0; i < keys.length; i++) {
+    const rows = found[keys[i]] || [];
+    for (let j = 0; j < rows.length; j++) {
+      const sp = clean_(rows[j] && (rows[j]['Sales Period'] || rows[j].salesPeriod));
+      if (sp && /[A-Za-z]+ \d{4}/.test(sp)) return sp;
+    }
+  }
+  return '';
+}
+
+function extractSalesPeriodFromFileName_(fileName) {
+  const s = String(fileName || '');
+  const m = s.match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})/i);
+  if (m) return m[1] + ' ' + m[2];
+  const iso = s.match(/Prior_Month.*?(\d{4})-(\d{2})/i) || s.match(/(\d{4})-(\d{2})-\d{2}/);
+  if (iso) {
+    const months = ['January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'];
+    const mi = Number(iso[2]) - 1;
+    if (mi >= 0 && mi < 12) return months[mi] + ' ' + iso[1];
+  }
+  return '';
+}
+
+function monthBoundsFromLabel_(label) {
+  const s = clean_(label);
+  if (!s) return null;
+  const m = s.match(/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})$/i);
+  if (!m) return null;
+  const months = {
+    january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+    july: 6, august: 7, september: 8, october: 9, november: 10, december: 11
+  };
+  const mi = months[m[1].toLowerCase()];
+  if (mi == null) return null;
+  const y = Number(m[2]);
+  const start = new Date(y, mi, 1);
+  const end = new Date(y, mi + 1, 0);
+  return { start: startOfDay_(start), end: startOfDay_(end) };
+}
+
+function normalizeKdpInsightRow_(row, periodLabel, periodBounds) {
+  if (!row || typeof row !== 'object') return null;
+  const out = {};
+  Object.keys(row).forEach(k => {
+    out[k] = row[k];
+  });
+
+  // Prior Month column aliases → Dashboard names our aggregator expects.
+  if (out['Author Name'] == null && out.Author != null) out['Author Name'] = out.Author;
+  if (out.Royalty == null && out.Earnings != null && clean_(out.Earnings).toUpperCase() !== 'N/A') {
+    out.Royalty = out.Earnings;
+  }
+  if (out['Net Units Sold'] == null) {
+    const alt = out['Net Units Sold or KENP Read**'] != null
+      ? out['Net Units Sold or KENP Read**']
+      : out['Net Units Sold or KENP Read'];
+    if (alt != null && clean_(alt).toUpperCase() !== 'N/A') out['Net Units Sold'] = alt;
+  }
+  if ((out['Net Units Sold'] == null || out['Net Units Sold'] === '') &&
+      out['Units Sold'] != null && clean_(out['Units Sold']).toUpperCase() !== 'N/A') {
+    const sold = number_(out['Units Sold']);
+    const refunded = number_(out['Units Refunded']);
+    out['Net Units Sold'] = Math.max(0, sold - refunded);
+  }
+  if (periodLabel) out['Sales Period'] = periodLabel;
+  if (periodBounds) {
+    out['Sales Period Start'] = dateKey_(periodBounds.start);
+    out['Sales Period End'] = dateKey_(periodBounds.end);
+  }
+
+  // Skip KENP-only lines inside Total Earnings (pages in Net Units column, no $).
+  const payout = clean_(out['Payout Plan'] || '');
+  const rtype = clean_(out['Royalty Type'] || '');
+  if (/kenp|normalized page/i.test(payout) || /kenp|normalized page/i.test(rtype)) {
+    out.__skip = true;
+  }
+  if (String(out['Units Sold']).toUpperCase() === 'N/A' &&
+      (out.Royalty == null || out.Royalty === '' || String(out.Royalty).toUpperCase() === 'N/A')) {
+    out.__skip = true;
+  }
+  return out;
 }
 
 function collectKdpDates_(found) {
@@ -425,6 +557,9 @@ function parseLooseDate_(v) {
     const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
     return isValidDate_(d) ? startOfDay_(d) : null;
   }
+  // Prior Month Royalties: "July 2026"
+  const bounds = monthBoundsFromLabel_(s);
+  if (bounds) return bounds.end;
   const d = new Date(s);
   return isValidDate_(d) ? startOfDay_(d) : null;
 }
@@ -1338,6 +1473,11 @@ function claimBucketForHit_(claimMap, hit) {
 function formatKdpImportSummary_(summary) {
   const lines = [];
   lines.push('KDP sales upload' + (summary.fileName ? ' (' + summary.fileName + ')' : '') + '.');
+  if (summary.reportFormatLabel || summary.reportFormat) {
+    lines.push('Detected format: ' + (summary.reportFormatLabel || summary.reportFormat));
+  }
+  const meta0 = summary.reportMeta || {};
+  if (meta0.salesPeriod) lines.push('Sales period: ' + meta0.salesPeriod);
   lines.push('');
 
   if (summary.skippedDuplicatePartial) {

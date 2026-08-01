@@ -119,6 +119,24 @@ function refreshEverything() {
   }
   syncMetaCampaignMarketingRows_();
   syncAutoEvents_();
+  try {
+    const rankSummary = updateAmazonRanks_(false, getSpreadsheetToday_());
+    if (rankSummary && rankSummary.successfulUpdates != null) {
+      SpreadsheetApp.getActiveSpreadsheet().toast(
+        'Ranks updated: ' + rankSummary.successfulUpdates + '/' + rankSummary.listingsChecked +
+          (rankSummary.robotChecks ? ' (robot checks: ' + rankSummary.robotChecks + ')' : ''),
+        'Amazon ranks',
+        8
+      );
+    }
+  } catch (rankErr) {
+    console.error('Rank update during refresh: ' + (rankErr && rankErr.message ? rankErr.message : rankErr));
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'Rank update failed — use Update Amazon Rankings Now',
+      'Amazon ranks',
+      8
+    );
+  }
   refreshSalesReports_();
   rebuildCatalogSummary_();
   setLastDashboardRun_('menu');

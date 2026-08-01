@@ -19,8 +19,9 @@ const AD = {
   ],
   TZ: 'America/Boise',
   AMAZON_FETCH_DELAY_MS: 2000,
-  AMAZON_USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  AMAZON_USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
   // Used only when Amazon blocks UrlFetchApp (robot check / empty rank HTML).
+  // Note: reader text often omits Best Sellers Rank — direct Amazon HTML is preferred.
   AMAZON_READER_FALLBACK_PREFIX: 'https://r.jina.ai/https://www.amazon.com/dp/',
   ACTIVE_LISTING_STATUSES: ['live', 'in review'],
   KDP_REPORTS_URL: 'https://kdp.amazon.com/en_US/reports-new',
@@ -31,6 +32,7 @@ const AD = {
   WEEKLY_TRIGGER_HOUR: 5,
   KDP_SHEETS: {
     COMBINED: 'Combined Sales',
+    TOTAL_EARNINGS: 'Total Earnings', // Prior Month Royalties export
     EBOOK: 'eBook Royalty',
     PAPERBACK: 'Paperback Royalty',
     HARDCOVER: 'Hardcover Royalty',

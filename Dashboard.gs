@@ -325,6 +325,13 @@ function refreshCategoryRankTable_(dash, startRow) {
     dash.getRange(row, 1, values.length, cols).setValues(values);
     dash.getRange(row, 2, values.length, 2).setNumberFormat('#,##0');
     dash.getRange(row, 4, values.length, 1).setNumberFormat('m/d/yyyy');
+    // Grey out categories not seen on the latest Overall scrape for this format.
+    section.rows.forEach((r, i) => {
+      if (!r.stale) return;
+      try {
+        dash.getRange(row + i, 1, 1, cols).setFontColor('#888888');
+      } catch (e) {}
+    });
     row += values.length + 1;
   });
 
