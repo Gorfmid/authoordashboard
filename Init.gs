@@ -64,11 +64,13 @@ function buildDashboardSheet_(sheet) {
     'Rank Trend (lower is better)'
   ];
   sheet.getRange(4,1,labels.length,2).setValues(labels.map(x=>[x,'']));
+  sheet.getRange('C3:E3').merge().setValue('Ultimate Goals').setFontWeight('bold')
+    .setHorizontalAlignment('center').setBackground('#1f4e78').setFontColor('#ffffff');
   sheet.getRange('F3:L3').merge().setValue('Catalog Performance').setFontWeight('bold')
     .setHorizontalAlignment('center').setBackground('#1f4e78').setFontColor('#ffffff');
   sheet.getRange('F4:L4').setValues([['Book','Stage','Units','KENP Read','Royalties (USD)','Comments','Best Rank']]);
   styleHeader_(sheet.getRange('F4:L4'));
-  [225,220,30,40,40,220,110,90,100,110,90,100].forEach((w,i)=>sheet.setColumnWidth(i+1,w));
+  [225,220,120,130,120,220,110,90,100,110,90,100].forEach((w,i)=>sheet.setColumnWidth(i+1,w));
 }
 
 function buildCatalogSheet_(sheet) {

@@ -11,6 +11,13 @@ const AD = {
    */
   ESTIMATED_KENP_RATE_USD: 0.0046413,
   BOOK_ID_PREFIX: 'SOL',
+  /** Long-horizon portfolio goals shown on Dashboard C3:E20. */
+  GOALS: {
+    ORDERS: 1000000,
+    KENP: 1000000000,
+    ORDER_MILESTONES: [100, 500, 1000, 5000, 10000, 50000, 100000, 250000, 500000, 1000000],
+    KENP_MILESTONES: [10000, 100000, 1000000, 10000000, 100000000, 1000000000]
+  },
   // Preferred Book ID order when migrating (title match, case-insensitive).
   STABLE_BOOK_ORDER: [
     'The Kestrel Veil Incident',

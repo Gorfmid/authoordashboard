@@ -58,8 +58,11 @@ function refreshDashboard_() {
 
   dash.getRange(4, 2, metrics.length, 1).setValues(metrics.map(x => [x]));
 
-  // Catalog Performance starts at column F (leave D–E as spacer).
-  clearBlockUnmerged_(dash, 3, 4, 200, 10);
+  const lifetimeUnits = number_(metrics[6]);
+  const lifetimeKenp = number_(metrics[7]);
+
+  // Catalog Performance starts at column F (C–E reserved for Ultimate Goals).
+  clearBlockUnmerged_(dash, 3, 6, 200, 10);
   mergeRowSafe_(dash, 3, 6, 7)
     .setValue('Catalog Performance')
     .setFontWeight('bold')
@@ -94,18 +97,163 @@ function refreshDashboard_() {
   const catalogEndRow = perf.length ? (4 + perf.length) : 4;
   const categoryStartRow = Math.max(metricsEndRow, catalogEndRow) + 2;
 
-  // Clear space below metrics (drops old Meta/KDP rows that moved to Statistics).
-  clearBlockUnmerged_(dash, metricsEndRow + 1, 1, 250, 5);
+  // Clear space below metrics in A–B only (C–E holds Ultimate Goals through row 20).
+  clearBlockUnmerged_(dash, metricsEndRow + 1, 1, 250, 2);
+  clearBlockUnmerged_(dash, 21, 3, 230, 3);
 
-  // Remove any leftover charts from the numbers Dashboard (charts live on Visual Dashboard).
+  // Charts live on Visual Dashboard except the Ultimate Goals chart in C3:E20.
   dash.getCharts().forEach(c => {
     try { dash.removeChart(c); } catch (e) {}
   });
 
+  refreshUltimateGoalsPanel_(dash, lifetimeUnits, lifetimeKenp);
   refreshCategoryRankTable_(dash, categoryStartRow);
   refreshStatistics_();
   refreshVisualDashboard_();
   hideDiagnosticSheets_();
+}
+
+/**
+ * Compact progress panel in Dashboard C3:E20 — ultimate goals + next milestones + bar chart.
+ */
+function refreshUltimateGoalsPanel_(dash, lifetimeUnits, lifetimeKenp) {
+  const ordersGoal = AD.GOALS.ORDERS;
+  const kenpGoal = AD.GOALS.KENP;
+  const units = Math.max(0, number_(lifetimeUnits));
+  const kenp = Math.max(0, number_(lifetimeKenp));
+
+  const ordersPct = ordersGoal > 0 ? (units / ordersGoal) * 100 : 0;
+  const kenpPct = kenpGoal > 0 ? (kenp / kenpGoal) * 100 : 0;
+  const ordersLeft = Math.max(0, ordersGoal - units);
+  const kenpLeft = Math.max(0, kenpGoal - kenp);
+
+  const nextOrders = nextGoalMilestone_(units, ordersGoal, AD.GOALS.ORDER_MILESTONES);
+  const nextKenp = nextGoalMilestone_(kenp, kenpGoal, AD.GOALS.KENP_MILESTONES);
+  const ordersMilePct = nextOrders > 0 ? Math.min(100, (units / nextOrders) * 100) : 100;
+  const kenpMilePct = nextKenp > 0 ? Math.min(100, (kenp / nextKenp) * 100) : 100;
+
+  clearBlockUnmerged_(dash, 3, 3, 18, 3);
+
+  mergeRowSafe_(dash, 3, 3, 3)
+    .setValue('Ultimate Goals')
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center')
+    .setBackground('#1f4e78')
+    .setFontColor('#ffffff');
+
+  dash.getRange(4, 3, 8, 1).setValues([
+    ['1,000,000 orders'],
+    [formatInt_(units) + ' so far · ' + formatGoalPct_(ordersPct)],
+    [formatInt_(ordersLeft) + ' to go'],
+    [progressBarText_(ordersPct)],
+    ['Next: ' + formatInt_(nextOrders) + ' (' + formatGoalPct_(ordersMilePct) + ')'],
+    ['1,000,000,000 KENP'],
+    [formatInt_(kenp) + ' so far · ' + formatGoalPct_(kenpPct)],
+    [formatInt_(kenpLeft) + ' to go']
+  ]);
+  dash.getRange(4, 3, 1, 3).merge()
+    .setFontWeight('bold').setFontColor('#1f4e78').setHorizontalAlignment('left');
+  dash.getRange(5, 3, 1, 3).merge().setFontColor('#3d4a57');
+  dash.getRange(6, 3, 1, 3).merge().setFontColor('#5a6a7a').setFontSize(9);
+  dash.getRange(7, 3, 1, 3).merge().setFontColor('#1f4e78').setFontSize(10);
+  dash.getRange(8, 3, 1, 3).merge().setFontColor('#5a6a7a').setFontSize(9);
+
+  dash.getRange(9, 3, 1, 3).merge()
+    .setFontWeight('bold').setFontColor('#1f4e78').setHorizontalAlignment('left');
+  dash.getRange(10, 3, 1, 3).merge().setFontColor('#3d4a57');
+  dash.getRange(11, 3, 1, 3).merge().setFontColor('#5a6a7a').setFontSize(9);
+
+  dash.getRange(12, 3, 2, 1).setValues([
+    [progressBarText_(kenpPct)],
+    ['Next: ' + formatInt_(nextKenp) + ' (' + formatGoalPct_(kenpMilePct) + ')']
+  ]);
+  dash.getRange(12, 3, 1, 3).merge().setFontColor('#1f4e78').setFontSize(10);
+  dash.getRange(13, 3, 1, 3).merge().setFontColor('#5a6a7a').setFontSize(9);
+
+  // Chart source (milestone % — readable early; ultimate % is in the text above).
+  dash.getRange(15, 3, 3, 2).setValues([
+    ['Goal', '% to next milestone'],
+    ['Orders', Math.round(ordersMilePct * 100) / 100],
+    ['KENP', Math.round(kenpMilePct * 100) / 100]
+  ]);
+  dash.getRange(15, 3, 1, 2)
+    .setFontWeight('bold')
+    .setFontSize(8)
+    .setBackground('#e8eef4')
+    .setFontColor('#1f4e78');
+  dash.getRange(16, 4, 2, 1).setNumberFormat('0.00');
+  dash.getRange(16, 3, 2, 1).setFontSize(9).setFontColor('#3d4a57');
+  dash.getRange(18, 3, 1, 3).merge()
+    .setValue('Chart = % to next milestone (ultimate goals above)')
+    .setFontSize(8)
+    .setFontColor('#8a96a3')
+    .setHorizontalAlignment('left');
+
+  const dataRange = dash.getRange(15, 3, 3, 2);
+  let builder = dash.newChart()
+    .asBarChart()
+    .addRange(dataRange)
+    .setTitle('Progress to next milestone')
+    .setNumHeaders(1)
+    .setLegendPosition(Charts.Position.NONE)
+    .setOption('width', 280)
+    .setOption('height', 150)
+    .setOption('backgroundColor', { fill: '#ffffff', stroke: '#d8dee6', strokeWidth: 1 })
+    .setOption('chartArea', { left: '28%', top: '22%', width: '62%', height: '62%' })
+    .setOption('titleTextStyle', { color: '#1f4e78', fontSize: 11, bold: true })
+    .setOption('hAxis', {
+      minValue: 0,
+      maxValue: 100,
+      format: "#'%'",
+      textStyle: { color: '#3d4a57', fontSize: 9 },
+      gridlines: { color: '#e2e8ee' }
+    })
+    .setOption('vAxis', { textStyle: { color: '#3d4a57', fontSize: 9 } })
+    .setOption('colors', ['#1f4e78'])
+    .setOption('annotations', { alwaysOutside: false })
+    .setPosition(14, 3, 0, 0);
+  dash.insertChart(builder.build());
+
+  [120, 130, 120].forEach((w, i) => {
+    const col = 3 + i;
+    if (dash.getColumnWidth(col) < w) dash.setColumnWidth(col, w);
+  });
+}
+
+function nextGoalMilestone_(current, ultimate, steps) {
+  const n = Math.max(0, number_(current));
+  const goal = Math.max(0, number_(ultimate));
+  const list = (steps || []).filter(s => number_(s) > 0 && number_(s) <= goal);
+  for (let i = 0; i < list.length; i++) {
+    if (n < number_(list[i])) return number_(list[i]);
+  }
+  return goal || 0;
+}
+
+function formatGoalPct_(pct) {
+  const n = number_(pct);
+  if (n <= 0) return '0%';
+  if (n >= 100) return '100%';
+  if (n < 0.001) return n.toFixed(5) + '%';
+  if (n < 0.01) return n.toFixed(4) + '%';
+  if (n < 1) return n.toFixed(3) + '%';
+  if (n < 10) return n.toFixed(2) + '%';
+  return n.toFixed(1) + '%';
+}
+
+function formatInt_(n) {
+  return Math.round(number_(n)).toLocaleString('en-US');
+}
+
+/** Simple 10-segment bar for ultimate-goal % (mostly empty early on — that's fine). */
+function progressBarText_(pct) {
+  const n = Math.max(0, Math.min(100, number_(pct)));
+  const filled = Math.round(n / 10);
+  const empty = 10 - filled;
+  let bar = '';
+  for (let i = 0; i < filled; i++) bar += '█';
+  for (let i = 0; i < empty; i++) bar += '░';
+  return bar + '  ' + formatGoalPct_(n);
 }
 
 function ensureDashboardLayout_(sheet) {
@@ -142,7 +290,7 @@ function ensureDashboardLayout_(sheet) {
     .setFontSize(22).setFontWeight('bold').setHorizontalAlignment('center')
     .setBackground('#1f4e78').setFontColor('#ffffff');
   sheet.setRowHeight(1, 46);
-  [225, 220, 30, 40, 40, 220, 110, 90, 100, 110, 90, 100].forEach((w, i) => {
+  [225, 220, 120, 130, 120, 220, 110, 90, 100, 110, 90, 100].forEach((w, i) => {
     if (sheet.getColumnWidth(i + 1) < w) sheet.setColumnWidth(i + 1, w);
   });
 }
